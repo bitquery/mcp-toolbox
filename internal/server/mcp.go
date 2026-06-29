@@ -359,6 +359,14 @@ func mcpRouter(s *Server) (chi.Router, error) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
+	// Bitquery: propagate the caller identity (edge-proxy X-Bitquery-* headers)
+	// into ctx so http tools can stamp a billing-attributable ClickHouse query_id.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := util.WithBitqueryIdentity(r.Context(), r.Header)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
 	r.Use(mcpAuthMiddleware(s))
 
 	r.Get("/sse", func(w http.ResponseWriter, r *http.Request) { sseHandler(s, w, r) })
