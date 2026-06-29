@@ -293,6 +293,18 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		return nil, util.NewAgentError("error populating path parameters", err)
 	}
 
+	// Bitquery: stamp a billing-attributable ClickHouse query_id built from the
+	// caller identity (edge-proxy X-Bitquery-* headers carried in ctx). No-op when
+	// no identity is present, so non-authenticated / stdio calls are unaffected.
+	if qid, ok := util.BitqueryClickhouseQueryID(ctx); ok {
+		if u, perr := url.Parse(urlString); perr == nil {
+			q := u.Query()
+			q.Set("query_id", qid)
+			u.RawQuery = q.Encode()
+			urlString = u.String()
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, string(t.Cfg.Method), urlString, strings.NewReader(requestBody))
 	if err != nil {
 		return nil, util.NewClientServerError("error creating http request", http.StatusInternalServerError, err)

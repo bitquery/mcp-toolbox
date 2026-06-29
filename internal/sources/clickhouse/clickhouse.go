@@ -21,9 +21,10 @@ import (
 	"net/url"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2"
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/goccy/go-yaml"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
+	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -105,6 +106,14 @@ func (s *Source) RunSQL(ctx context.Context, statement string, params parameters
 	if params != nil {
 		sliceParams = params.AsSlice()
 	}
+
+	// Bitquery: stamp a billing-attributable query_id (from the caller identity in
+	// ctx) so the ClickHouse query_log -> api_v2 billing pipeline attributes cost per
+	// payer. No-op when no identity is present (stdio / unauthenticated calls).
+	if qid, ok := util.BitqueryClickhouseQueryID(ctx); ok {
+		ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(qid))
+	}
+
 	results, err := s.ClickHousePool().QueryContext(ctx, statement, sliceParams...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to execute query: %w", err)
