@@ -78,6 +78,12 @@ type Config struct {
 	AllowedIPRanges        []string          `yaml:"allowedIpRanges"`
 	CustomBlockedIPRanges  []string          `yaml:"customBlockedIpRanges"`
 	AllowPrivateNetworks   bool              `yaml:"allowPrivateNetworks"`
+	// Bitquery: when set, http tools stamp the LEGACY api-cluster billing query_id
+	// (v1 graphql_server 6-part format — server:user:qid:cid:payer:paths, with this
+	// value as the trailing paths field) instead of the modern 7-part
+	// rand:rand:client:user:payer:plan:server. Set on sources pointing at the legacy
+	// *.api-cluster.local ClickHouse (btc/solana).
+	LegacyBillingPaths string `yaml:"bitqueryLegacyBillingPaths"`
 }
 
 func (r Config) SourceConfigType() string {
@@ -191,6 +197,12 @@ func (s *Source) HttpBaseURL() string {
 
 func (s *Source) HttpQueryParams() map[string]string {
 	return s.QueryParams
+}
+
+// BitqueryLegacyBillingPaths returns the configured legacy-billing paths value
+// (empty = the source bills via the modern 7-part query_id).
+func (s *Source) BitqueryLegacyBillingPaths() string {
+	return s.LegacyBillingPaths
 }
 
 func (s *Source) Client() *http.Client {

@@ -52,6 +52,7 @@ type compatibleSource interface {
 	HttpBaseURL() string
 	HttpQueryParams() map[string]string
 	RunRequest(context.Context, *http.Request) (any, error)
+	BitqueryLegacyBillingPaths() string
 }
 
 type Config struct {
@@ -294,9 +295,18 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	}
 
 	// Bitquery: stamp a billing-attributable ClickHouse query_id built from the
-	// caller identity (edge-proxy X-Bitquery-* headers carried in ctx). No-op when
-	// no identity is present, so non-authenticated / stdio calls are unaffected.
-	if qid, ok := util.BitqueryClickhouseQueryID(ctx); ok {
+	// caller identity (edge-proxy X-Bitquery-* headers carried in ctx). Sources on
+	// the legacy api-cluster declare bitqueryLegacyBillingPaths and get the v1
+	// 6-part format; everything else gets the modern 7-part one. No-op when no
+	// identity is present, so non-authenticated / stdio calls are unaffected.
+	var qid string
+	var stamp bool
+	if paths := source.BitqueryLegacyBillingPaths(); paths != "" {
+		qid, stamp = util.BitqueryLegacyClickhouseQueryID(ctx, paths)
+	} else {
+		qid, stamp = util.BitqueryClickhouseQueryID(ctx)
+	}
+	if stamp {
 		if u, perr := url.Parse(urlString); perr == nil {
 			q := u.Query()
 			q.Set("query_id", qid)
