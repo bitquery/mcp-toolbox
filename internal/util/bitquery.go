@@ -108,6 +108,39 @@ func BitqueryClickhouseQueryID(ctx context.Context) (string, bool) {
 	return strings.Join(parts, ":"), true
 }
 
+// Legacy api-cluster (v1 graphql_server) query_id segment lengths, mirroring the
+// v1 generate_query_id: a 16-char query id + a 10-char CID.
+const (
+	bitqueryLegacyGqlIDLength = 16
+	bitqueryLegacyCIDLength   = 10
+)
+
+// BitqueryLegacyClickhouseQueryID builds the 6-part ":"-delimited query_id the
+// LEGACY api-cluster billing pipeline parses (the v1 graphql_server format):
+//
+//	<server>:<user_id>:<query_id(16)>:<cid(10)>:<payer_id>:<paths>
+//
+// e.g. ed0cb589757d:44504:tizjVt1LyoN6csPE:LX9qFZxctR:44504:solana/transfers
+// (v1: SERVER_NAME:user.id:graphql_query_id:random(CID):payer_id:paths). paths is
+// the "<dataset>/<field>" the request is accounted to, configured per source
+// (bitqueryLegacyBillingPaths). Returns false when no identity is present, so the
+// caller leaves query_id unset.
+func BitqueryLegacyClickhouseQueryID(ctx context.Context, paths string) (string, bool) {
+	id, ok := BitqueryIdentityFromContext(ctx)
+	if !ok {
+		return "", false
+	}
+	parts := []string{
+		bitqueryServer,
+		orDefault(sanitizeIDPart(id.UserID), "0"),
+		randomAlnum(bitqueryLegacyGqlIDLength),
+		randomAlnum(bitqueryLegacyCIDLength),
+		orDefault(sanitizeIDPart(id.PayerID), "0"),
+		orDefault(sanitizeIDPart(paths), "mcp"),
+	}
+	return strings.Join(parts, ":"), true
+}
+
 // sanitizeIDPart strips ":" (the query_id field separator) and surrounding
 // whitespace so a value can't break the 7-field structure.
 func sanitizeIDPart(s string) string {
@@ -127,4 +160,20 @@ func randomHex(n int) string {
 		return "mcprnd"
 	}
 	return hex.EncodeToString(b)
+}
+
+const alnumChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// randomAlnum returns n random alphanumeric characters (the charset the v1
+// generate_query_id uses for its random segments).
+func randomAlnum(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "mcprnd"
+	}
+	out := make([]byte, n)
+	for i, v := range b {
+		out[i] = alnumChars[int(v)%len(alnumChars)]
+	}
+	return string(out)
 }
