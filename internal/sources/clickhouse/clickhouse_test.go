@@ -21,6 +21,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/google/go-cmp/cmp"
+	"github.com/googleapis/mcp-toolbox/internal/bitquerylabels"
 	"github.com/googleapis/mcp-toolbox/internal/server"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/testutils"
@@ -28,6 +29,7 @@ import (
 )
 
 func TestParseFromYamlClickhouse(t *testing.T) {
+	persistFalse := false
 	tcs := []struct {
 		desc string
 		in   string
@@ -83,6 +85,43 @@ func TestParseFromYamlClickhouse(t *testing.T) {
 					Database: "testdb",
 					Protocol: "",
 					Secure:   false,
+				},
+			},
+		},
+		{
+			desc: "bitquery labels-query-service hook",
+			in: `
+			kind: source
+			name: labels-clickhouse
+			type: clickhouse
+			host: 127.0.0.1
+			port: "8123"
+			user: testuser
+			database: directory
+			bitqueryLabelsQueryService:
+			  service: _labels-query-service._node_web.example.local
+			  timeoutSec: 2.5
+			  srvTtlSec: 30
+			  persist: false
+			  addressParams: [address, addresses]
+			  chainParam: chain
+			`,
+			want: map[string]sources.SourceConfig{
+				"labels-clickhouse": Config{
+					Name:     "labels-clickhouse",
+					Type:     "clickhouse",
+					Host:     "127.0.0.1",
+					Port:     "8123",
+					User:     "testuser",
+					Database: "directory",
+					LabelsQueryService: &bitquerylabels.Config{
+						Service:       "_labels-query-service._node_web.example.local",
+						TimeoutSec:    2.5,
+						SrvTtlSec:     30,
+						Persist:       &persistFalse,
+						AddressParams: []string{"address", "addresses"},
+						ChainParam:    "chain",
+					},
 				},
 			},
 		},

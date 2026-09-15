@@ -23,6 +23,7 @@ import (
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/goccy/go-yaml"
+	"github.com/googleapis/mcp-toolbox/internal/bitquerylabels"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
@@ -58,6 +59,10 @@ type Config struct {
 	Password string `yaml:"password"`
 	Protocol string `yaml:"protocol"`
 	Secure   bool   `yaml:"secure"`
+	// Bitquery: when set (and naming a service or host), every clickhouse-sql tool
+	// on this source first asks the labels-query-service to refresh the addresses
+	// in its parameters, then runs its SQL. See internal/bitquerylabels.
+	LabelsQueryService *bitquerylabels.Config `yaml:"bitqueryLabelsQueryService,omitempty"`
 }
 
 func (r Config) SourceConfigType() string {
@@ -65,6 +70,13 @@ func (r Config) SourceConfigType() string {
 }
 
 func (r Config) Initialize(ctx context.Context, tracer trace.Tracer) (sources.Source, error) {
+	// Bitquery: validates the labels-query-service block without network I/O, so an
+	// unreachable labels service never fails startup.
+	labelsPreprocessor, err := bitquerylabels.New(ctx, r.Name, r.LabelsQueryService)
+	if err != nil {
+		return nil, err
+	}
+
 	pool, err := initClickHouseConnectionPool(ctx, tracer, r.Name, r.Host, r.Port, r.User, r.Password, r.Database, r.Protocol, r.Secure)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create pool: %w", err)
@@ -76,17 +88,26 @@ func (r Config) Initialize(ctx context.Context, tracer trace.Tracer) (sources.So
 	}
 
 	s := &Source{
-		Config: r,
-		Pool:   pool,
+		Config:             r,
+		Pool:               pool,
+		labelsPreprocessor: labelsPreprocessor,
 	}
 	return s, nil
 }
 
 var _ sources.Source = &Source{}
+var _ bitquerylabels.HookSource = &Source{}
 
 type Source struct {
 	Config
-	Pool *sql.DB
+	Pool               *sql.DB
+	labelsPreprocessor *bitquerylabels.Preprocessor
+}
+
+// BitqueryLabelsPreprocessor returns the labels pre-process hook, or nil when
+// the source has no labels-query-service configured.
+func (s *Source) BitqueryLabelsPreprocessor() *bitquerylabels.Preprocessor {
+	return s.labelsPreprocessor
 }
 
 func (s *Source) SourceType() string {

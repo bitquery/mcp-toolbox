@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	yaml "github.com/goccy/go-yaml"
+	"github.com/googleapis/mcp-toolbox/internal/bitquerylabels"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
@@ -119,6 +120,15 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	newParams, err := parameters.GetParams(t.Cfg.Parameters, paramsMap)
 	if err != nil {
 		return nil, util.NewAgentError("unable to extract standard params", err)
+	}
+
+	// Bitquery: query pre-process hook. A source configured with
+	// bitqueryLabelsQueryService asks the labels-query-service to refresh the
+	// addresses in this call's parameters before the SQL reads them. Best-effort
+	// and bounded by its own timeout, so it never fails the call; a source without
+	// the hook (or a call with no address parameter) is untouched.
+	if hookSource, ok := s.(bitquerylabels.HookSource); ok {
+		hookSource.BitqueryLabelsPreprocessor().Preprocess(ctx, paramsMap)
 	}
 
 	resp, err := source.RunSQL(ctx, newStatement, newParams)
