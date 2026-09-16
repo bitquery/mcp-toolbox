@@ -227,7 +227,9 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if s.ReturnFullError {
-			return nil, fmt.Errorf("unexpected status code: %d, response body: %s", resp.StatusCode, string(body))
+			// Bitquery: a ClickHouse error body names the server version and replica
+			// hosts; log it and return a cleaned copy (see util.BitqueryCleanDatabaseMessage).
+			return nil, util.BitqueryDatabaseErrorResponse(ctx, s.Name, resp.StatusCode, body)
 		}
 
 		logger, err := util.LoggerFromContext(ctx)

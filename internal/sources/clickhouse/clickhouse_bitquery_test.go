@@ -16,7 +16,7 @@ package clickhouse
 
 // Bitquery: over the HTTP protocol a connect/timeout failure must not hand the
 // caller (the model) the request URL — internal host, port, database — while the
-// server log keeps it; a ClickHouse error body still passes through.
+// server log keeps it; a ClickHouse error body is not mistaken for one.
 
 import (
 	"bytes"
@@ -128,7 +128,7 @@ func TestBitqueryRunSQLTimeoutIsSanitized(t *testing.T) {
 	}
 }
 
-func TestBitqueryRunSQLDatabaseErrorUnchanged(t *testing.T) {
+func TestBitqueryRunSQLDatabaseErrorIsNotTransport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("Code: 62. DB::Exception: Syntax error"))
@@ -141,7 +141,7 @@ func TestBitqueryRunSQLDatabaseErrorUnchanged(t *testing.T) {
 		t.Fatalf("expected an error")
 	}
 	if !strings.Contains(err.Error(), "Code: 62. DB::Exception: Syntax error") || strings.Contains(err.Error(), "the data service") {
-		t.Fatalf("database error body was altered: %q", err.Error())
+		t.Fatalf("database error lost its message or reads as a transport failure: %q", err.Error())
 	}
 	if strings.Contains(logs.String(), "data source transport error") {
 		t.Fatalf("database error logged as a transport failure: %q", logs.String())

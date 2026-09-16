@@ -139,8 +139,9 @@ func (s *Source) RunSQL(ctx context.Context, statement string, params parameters
 	if err != nil {
 		// Bitquery: over the HTTP protocol a connect/timeout failure prints the
 		// request URL (internal host, port, database, query_id); log it and return an
-		// address-free message. A ClickHouse error body passes through unchanged.
-		return nil, fmt.Errorf("unable to execute query: %w", util.BitqueryTransportFailure(ctx, s.Name, err, 0))
+		// address-free message. A ClickHouse error body loses the server version,
+		// replica host and expression context (see util.BitqueryCleanDatabaseMessage).
+		return nil, fmt.Errorf("unable to execute query: %w", util.BitqueryDatabaseFailure(ctx, s.Name, util.BitqueryTransportFailure(ctx, s.Name, err, 0)))
 	}
 	defer results.Close()
 
@@ -190,8 +191,9 @@ func (s *Source) RunSQL(ctx context.Context, statement string, params parameters
 	}
 
 	if err := results.Err(); err != nil {
-		// Bitquery: a connection lost mid-stream names the peer IPs.
-		return nil, fmt.Errorf("errors encountered by results.Scan: %w", util.BitqueryTransportFailure(ctx, s.Name, err, 0))
+		// Bitquery: a connection lost mid-stream names the peer IPs; an exception
+		// sent mid-stream is a ClickHouse error like any other.
+		return nil, fmt.Errorf("errors encountered by results.Scan: %w", util.BitqueryDatabaseFailure(ctx, s.Name, util.BitqueryTransportFailure(ctx, s.Name, err, 0)))
 	}
 
 	return out, nil
