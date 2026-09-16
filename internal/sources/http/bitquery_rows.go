@@ -57,6 +57,9 @@ func isJSONRowStreamFormat(format string) bool {
 //   - Everything else (plain text, HTML, a stream with a broken line or a
 //     trailing ClickHouse exception, values that are not objects, several
 //     values on one line) is returned as the raw string, as before.
+//
+// RunRequest turns a body that ends in a recognized ClickHouse exception into an
+// error before it gets here (see trailingClickHouseException).
 func decodeResponseBody(body []byte, header http.Header) any {
 	rowStream := isJSONRowStreamFormat(header.Get(clickHouseFormatHeader))
 

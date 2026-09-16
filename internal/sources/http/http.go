@@ -244,6 +244,13 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
+	// Bitquery: ClickHouse sends 200 before a query has finished; when the query
+	// fails later, the exception follows the rows already sent. Report the failure
+	// rather than a partial result (see bitquery_stream_exception.go).
+	if exception, ok := trailingClickHouseException(body, resp.Header); ok {
+		return nil, util.BitqueryDatabaseErrorInResult(ctx, s.Name, exception.rows, exception.text)
+	}
+
 	// Bitquery: a JSON document is returned parsed and anything else as a string,
 	// as upstream does; a newline-delimited row stream (ClickHouse JSONEachRow on
 	// servers without output_format_json_array_of_rows) is returned as rows.

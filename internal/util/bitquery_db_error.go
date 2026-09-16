@@ -108,6 +108,22 @@ func BitqueryDatabaseErrorResponse(ctx context.Context, sourceName string, statu
 	return dbErr
 }
 
+// BitqueryDatabaseErrorInResult builds the error for a query that failed after the
+// server had answered 200 and sent rows, so the exception came at the end of the
+// result body. The rows are not returned; the exception text is cleaned like any
+// other database error and the original logged.
+func BitqueryDatabaseErrorInResult(ctx context.Context, sourceName string, rows int, exception string) error {
+	original := fmt.Errorf("query failed after %d result rows had been sent: %s", rows, exception)
+	msg, code, name, _ := BitqueryCleanDatabaseMessage(exception)
+	reported := "query failed: " + msg
+	if rows > 0 {
+		reported = fmt.Sprintf("query failed after %d result rows had been sent (partial result discarded): %s", rows, msg)
+	}
+	dbErr := &BitqueryDatabaseError{msg: reported, code: code, name: name, cause: original}
+	bitqueryLogDatabaseError(ctx, sourceName, dbErr, original.Error())
+	return dbErr
+}
+
 func bitqueryLogDatabaseError(ctx context.Context, sourceName string, dbErr *BitqueryDatabaseError, original string) {
 	logger, err := LoggerFromContext(ctx)
 	if err != nil {
