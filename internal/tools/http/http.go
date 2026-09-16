@@ -68,6 +68,9 @@ type Config struct {
 	BodyParams       parameters.Parameters  `yaml:"bodyParams"`
 	HeaderParams     parameters.Parameters  `yaml:"headerParams"`
 	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+	// Bitquery: send each call to one of a fixed set of sources, chosen by the
+	// exact value of one string parameter (see bitquery_routes.go).
+	SourceRoutes *SourceRoutes `yaml:"bitquerySourceRoutes,omitempty"`
 }
 
 // validate interface
@@ -77,7 +80,7 @@ func (cfg Config) ToolConfigType() string {
 	return resourceType
 }
 
-func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
+func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 	if cfg.Description == "" {
 		return nil, fmt.Errorf("description is required for tool %q", cfg.Name)
 	}
@@ -87,6 +90,11 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 
 	// Verify no duplicate parameter names
 	err := parameters.CheckDuplicateParameters(allParameters)
+	if err != nil {
+		return nil, err
+	}
+
+	routes, err := cfg.initSourceRoutes(ctx, allParameters)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +114,7 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
 			allParameters,
 		),
+		routes: routes,
 	}, nil
 }
 
@@ -114,6 +123,7 @@ var _ tools.Tool = Tool{}
 
 type Tool struct {
 	tools.BaseTool[Config]
+	routes *sourceRoutes
 }
 
 func (t Tool) GetSourceName() string {
@@ -274,13 +284,23 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	if !ok {
 		return nil, util.NewClientServerError("source used is not compatible with the tool", http.StatusInternalServerError, nil)
 	}
+	paramsMap := params.AsMap()
+
+	// Bitquery: a routed tool swaps in the source its parameter names, before any
+	// part of the request is built; a value outside the route set stops here.
+	if t.routes != nil {
+		routed, err := t.routes.pick(paramsMap)
+		if err != nil {
+			return nil, util.NewAgentError("error selecting data source", err)
+		}
+		source = routed
+	}
+
 	// Combine Source and Tool headers.
 	// In case of conflict, Tool header overrides Source header
 	combinedHeaders := make(map[string]string)
 	maps.Copy(combinedHeaders, source.HttpDefaultHeaders())
 	maps.Copy(combinedHeaders, t.Cfg.Headers)
-
-	paramsMap := params.AsMap()
 
 	// Calculate request body
 	requestBody, err := getRequestBody(t.Cfg.BodyParams, t.Cfg.RequestBody, paramsMap)

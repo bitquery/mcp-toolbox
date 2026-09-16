@@ -271,6 +271,10 @@ func InitializeOfflineConfigs(ctx context.Context, cfg ServerConfig) (
 // initializeTools initializes and validates the tools from the config.
 func initializeTools(ctx context.Context, cfg ServerConfig, sourcesMap map[string]sources.Source, instrumentation *telemetry.Instrumentation, l log.Logger) (map[string]tools.Tool, error) {
 	toolsMap := make(map[string]tools.Tool)
+	if !cfg.SkipSourceValidation {
+		// Bitquery: tools that route a call among several sources resolve them here, once.
+		ctx = tools.WithSourceLookup(ctx, tools.SourceMap(sourcesMap))
+	}
 	for name, tc := range cfg.ToolConfigs {
 		t, err := func() (tools.Tool, error) {
 			_, span := instrumentation.Tracer.Start(
