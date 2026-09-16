@@ -16,7 +16,6 @@ package http
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -245,12 +244,10 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var data any
-	if err = json.Unmarshal(body, &data); err != nil {
-		// if unable to unmarshal data, return result as string.
-		return string(body), nil
-	}
-	return data, nil
+	// Bitquery: a JSON document is returned parsed and anything else as a string,
+	// as upstream does; a newline-delimited row stream (ClickHouse JSONEachRow on
+	// servers without output_format_json_array_of_rows) is returned as rows.
+	return decodeResponseBody(body, resp.Header), nil
 }
 
 // bitqueryTimeout is the limit a failed request is reported against: the
