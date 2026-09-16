@@ -213,14 +213,17 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 	// Make request and fetch response
 	resp, err := s.Client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error making HTTP request: %s", err)
+		// Bitquery: a transport error prints the request URL (internal host, port,
+		// query params); log it and hand the caller an address-free message instead.
+		return nil, fmt.Errorf("error making HTTP request: %w", util.BitqueryTransportFailure(ctx, s.Name, err, s.bitqueryTimeout(req)))
 	}
 	defer resp.Body.Close()
 
 	var body []byte
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		// Bitquery: a body read cut by the timeout or a reset names the peer IPs.
+		return nil, util.BitqueryTransportFailure(ctx, s.Name, err, s.bitqueryTimeout(req))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if s.ReturnFullError {
@@ -246,6 +249,16 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 		return string(body), nil
 	}
 	return data, nil
+}
+
+// bitqueryTimeout is the limit a failed request is reported against: the
+// configured client timeout, or 0 (not quoted) when the caller's own context
+// ended first and the configured value is not what expired.
+func (s *Source) bitqueryTimeout(req *http.Request) time.Duration {
+	if req.Context().Err() != nil {
+		return 0
+	}
+	return s.client.Timeout
 }
 
 func truncateForLog(body []byte, limit int) string {
