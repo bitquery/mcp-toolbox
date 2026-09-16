@@ -72,6 +72,7 @@ func ServeFlags(flags *pflag.FlagSet, opts *ToolboxOptions) {
 	flags.BoolVar(&opts.Cfg.EnableAPI, "enable-api", false, "Enable the /api endpoint.")
 	flags.StringVar(&opts.Cfg.ToolboxUrl, "toolbox-url", "", "Specifies the Toolbox URL. Used as the resource field in the MCP PRM file when MCP Auth is enabled. Falls back to TOOLBOX_URL environment variable.")
 	flags.StringVar(&opts.Cfg.McpPrmFile, "mcp-prm-file", "", "Path to a manual Protected Resource Metadata (PRM) JSON file. If provided, overrides auto-generation.")
+	flags.StringVar(&opts.Cfg.ServerInstructionsFile, "server-instructions-file", "", "Path to a text file sent to MCP clients as the server instructions in the initialize result. Falls back to the "+server.ServerInstructionsFileEnv+" environment variable.")
 	flags.StringSliceVar(&opts.Cfg.AllowedOrigins, "allowed-origins", []string{"*"}, "Specifies a list of origins permitted to access this server. Defaults to '*'.")
 	flags.StringSliceVar(&opts.Cfg.AllowedHosts, "allowed-hosts", []string{"*"}, "Specifies a list of hosts permitted to access this server. Defaults to '*'.")
 	flags.Int64Var(&opts.Cfg.HttpMaxRequestBytes, "http-max-request-bytes", server.DefaultHTTPMaxRequestBytes, "Maximum MCP HTTP request body size in bytes.")

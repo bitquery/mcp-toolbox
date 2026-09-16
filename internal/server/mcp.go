@@ -829,6 +829,8 @@ func processMcpMessage(ctx context.Context, body []byte, s *Server, protocolVers
 	ctx = util.WithInstrumentation(ctx, s.instrumentation)
 	ctx = util.WithToolboxVersionKey(ctx, s.version)
 	ctx = util.WithEnableDraftSpecs(ctx, s.enableDraftSpecs)
+	// Bitquery: server instructions for the initialize / server/discover result
+	ctx = util.WithServerInstructions(ctx, s.ServerInstructions())
 	// Process the method
 	switch baseMessage.Method {
 	// This is only used for <v2026

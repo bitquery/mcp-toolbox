@@ -64,6 +64,8 @@ type Server struct {
 	mcpPrmFile          string
 	httpMaxRequestBytes int64
 	enableDraftSpecs    bool
+	// Bitquery: MCP server instructions (bitquery_instructions.go)
+	instructions serverInstructions
 }
 
 func InitializeConfigs(ctx context.Context, cfg ServerConfig) (
@@ -452,6 +454,13 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	logger := l.SlogLogger()
 	r.Use(httplog.RequestLogger(logger, httpOpts))
 
+	// Bitquery: read the MCP server instructions before any source connects, so a bad
+	// path fails the start immediately.
+	instructionsPath, instructionsText, err := loadConfiguredServerInstructions(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	sourcesMap, authServicesMap, embeddingModelsMap, toolsMap, promptsMap, groupsMap, err := InitializeConfigs(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize configs: %w", err)
@@ -483,6 +492,7 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		httpMaxRequestBytes: limit,
 		enableDraftSpecs:    cfg.EnableDraftSpecs,
 	}
+	s.setServerInstructions(ctx, instructionsPath, instructionsText)
 
 	if s.enableDraftSpecs {
 		s.logger.WarnContext(ctx, "Flag --enable-draft-specs is active. Please note that draft specs are subject to breaking changes and will be completely removed (not redirected) once stable MCP specifications are released. Do not use this configuration in production.")

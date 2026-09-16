@@ -92,6 +92,8 @@ func initializeHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (
 			},
 			Version: v,
 		},
+		// Bitquery: empty (not configured) is omitted from the JSON
+		Instructions: util.ServerInstructionsFromContext(ctx),
 	}
 	res := jsonrpc.JSONRPCResponse{
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,

@@ -89,6 +89,10 @@ type ServerConfig struct {
 	ToolboxUrl string
 	// McpPrmFile specifies the path to a manual Protected Resource Metadata (PRM) JSON file. If provided, overrides auto-generation.
 	McpPrmFile string
+	// ServerInstructionsFile is the path to a text file returned as `instructions` in the MCP
+	// initialize result. Empty falls back to the TOOLBOX_SERVER_INSTRUCTIONS_FILE environment
+	// variable (Bitquery fork, see bitquery_instructions.go).
+	ServerInstructionsFile string
 	// Specifies a list of origins permitted to access this server.
 	AllowedOrigins []string
 	// Specifies a list of hosts permitted to access this server.

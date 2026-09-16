@@ -354,14 +354,20 @@ func watchChanges(ctx context.Context, watchDirs map[string]bool, watchedFiles m
 
 			folderChanged := watchingFolder &&
 				(strings.HasSuffix(cleanedFilename, ".yaml") || strings.HasSuffix(cleanedFilename, ".yml"))
+			// Bitquery: an edit to the MCP server instructions file (when it sits in a watched
+			// directory) also triggers the reload that re-reads it.
+			instructionsChanged := s.IsServerInstructionsFile(cleanedFilename)
 
-			if folderChanged || watchedFiles[cleanedFilename] {
+			if folderChanged || watchedFiles[cleanedFilename] || instructionsChanged {
 				// indicates the write event is on a relevant file
 				debounce.Reset(debounceDelay)
 			}
 
 		case <-debounce.C:
 			debounce.Stop()
+			// Bitquery: re-read the MCP server instructions on every reload, independently of
+			// the YAML result; a file that fails validation keeps the previous text.
+			_ = s.ReloadServerInstructions(ctx)
 			var allFiles []string
 			parser := internal.ConfigParser{}
 			if watchingFolder {

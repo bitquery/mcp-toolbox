@@ -203,6 +203,8 @@ func serverDiscoverHandler(ctx context.Context, id jsonrpc.RequestId, body []byt
 				ListChanged: &promptsListChanged,
 			},
 		},
+		// Bitquery: empty (not configured) is omitted from the JSON
+		Instructions: util.ServerInstructionsFromContext(ctx),
 	}
 	res := jsonrpc.JSONRPCResponse{
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
