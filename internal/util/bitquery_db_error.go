@@ -180,7 +180,45 @@ var (
 	bqServerPathRe = regexp.MustCompile(`(^|[\s'"(=,\[])/(?:var|etc|usr|opt|home|tmp|data|mnt|srv|root|clickhouse|proc|run)/[^\s'",;)\]]*`)
 	bqSecretRe     = regexp.MustCompile(`(?i)\b(password|passwd|token|access_token|api_key|apikey|key)=[^&\s"',;()]*[^&\s"',;().]`)
 	bqSpacesRe     = regexp.MustCompile(`[ \t]{2,}`)
+
+	// A database user name in a URL or DSN, wherever it appears: "?user=mcp",
+	// "&user=mcp", "http://mcp:secret@host" (the password goes with it). As with
+	// secrets, a trailing period ends the sentence, not the name.
+	bqUserURLParamRe = regexp.MustCompile(`([?&]user=)[^&\s"',;()#]{0,255}[^&\s"',;()#.]`)
+	bqUserInfoRe     = regexp.MustCompile(`(\b[A-Za-z][A-Za-z0-9+.-]{0,20}://)[^\s/@?#'"]{1,256}@`)
+	// Where a message starts echoing the caller's SQL: a syntax error's "failed at
+	// position N (…): <fragment>", "while processing: '<query>'", "In scope <query>",
+	// chproxy's `; query: "<query>"`. No user name is looked for from there on.
+	bqSQLEchoRe = regexp.MustCompile(`failed at position \d+|while processing|[Ii]n scope |; query: "`)
 )
+
+// bqUserRedacted replaces a database user name in a caller-facing message.
+const bqUserRedacted = "[user]"
+
+// bqUserQuoted is a user name as ClickHouse (`mcp`, 'mcp') or chproxy ("mcp") quotes it.
+const bqUserQuoted = "`[^`\\n]{1,128}`|'[^'\\n]{1,128}'|\"(?:[^\"\\\\\\n]|\\\\.){1,128}\""
+
+// bqUserShapes are the messages known to name the database user, in the exact
+// wording and letter case the servers print, each as (prefix)(name)(suffix). A
+// bare word "user" is never enough: SQL echoes are full of it — system.processes
+// and system.query_log have a user column ("WHERE user=currentUser()", "GROUP BY
+// user", "user = 'x'") — and so are guard messages ("for user wallets").
+var bqUserShapes = []*regexp.Regexp{
+	// Code 202, 25.x and 20.8: "Too many simultaneous queries for user mcp. Current: 4, maximum: 4".
+	regexp.MustCompile(`(Too many simultaneous queries for user )(.{1,256}?)(\. Current: \d)`),
+	// Code 201: "Quota for user `mcp` for 3600s has been exceeded".
+	regexp.MustCompile("(Quota for user )(" + bqUserQuoted + "|[^\\s`'\"]{1,128})( for \\S+ has )"),
+	// Code 192: "There is no user `mcp` in user directories".
+	regexp.MustCompile("(There is no user )(" + bqUserQuoted + "|[^\\s`'\"]{1,128})( in )"),
+	// "User `mcp` is not allowed to …" (ClickHouse), `user "mcp" is not allowed to access via http` (chproxy).
+	// Both quote the name; an unquoted word here is prose ("a user that is not allowed").
+	regexp.MustCompile("(\\b(?:[Uu]ser|cluster user) )(" + bqUserQuoted + ")( is not allowed\\b)"),
+	// chproxy: `limits for user "mcp" are exceeded`, `rate limit for user "mcp" is exceeded`,
+	// `timeout for user "mcp" exceeded`, and the same for a "cluster user".
+	regexp.MustCompile(`(\b(?:limits|rate limit|timeout) for (?:cluster )?user )("(?:[^"\\\n]|\\.){1,128}")( (?:are |is )?exceeded\b)`),
+	// chproxy: `invalid username or password for user "mcp"`.
+	regexp.MustCompile(`(\binvalid username or password for (?:cluster )?user )("(?:[^"\\\n]|\\.){1,128}")()`),
+}
 
 // Codes whose message starts with the database user name ("mcp: Not enough privileges").
 var bqUserPrefixedCodes = map[int]bool{164: true, 192: true, 193: true, 194: true, 195: true, 497: true}
@@ -202,7 +240,9 @@ const (
 // (code 395) becomes "invalid request: <message>" — the guard author's text only.
 // The authentication error loses the user name. Any text, ClickHouse or not, has
 // IP addresses, host:port pairs, internal host names, server paths, secrets in
-// key=value form and proxy request scopes replaced.
+// key=value form, proxy request scopes and database user names (in the messages
+// known to print one, e.g. "… for user mcp. Current: 4", and in URLs / DSNs)
+// replaced; a user name inside an echo of the caller's SQL is left alone.
 func BitqueryCleanDatabaseMessage(text string) (clean string, code int, name string, changed bool) {
 	original := strings.TrimSpace(text)
 	clean = original
@@ -329,6 +369,8 @@ func bitqueryAppendName(text, name string) string {
 
 func bitqueryScrubServerDetail(text string) string {
 	text = bqProxyScopeRe.ReplaceAllString(text, "")
+	// User names before addresses: a DSN's "user:password@" goes whole.
+	text = bitqueryScrubUserNames(text)
 	text = bqReceivedFromRe.ReplaceAllString(text, "")
 	text = bqOnHostRe.ReplaceAllString(text, "")
 	text = bqServerPathRe.ReplaceAllString(text, "${1}[path]")
@@ -337,6 +379,27 @@ func bitqueryScrubServerDetail(text string) string {
 	text = bqIPv4Re.ReplaceAllString(text, "[address]")
 	text = bqHostPortRe.ReplaceAllString(text, "[address]")
 	return bitqueryMaskSecrets(text)
+}
+
+// bitqueryScrubUserNames replaces the database user name where a message names
+// it — "Too many simultaneous queries for user mcp" becomes "… for user [user]" —
+// on every text, not only authentication errors: in the known message shapes
+// (bqUserShapes) before any echo of the caller's SQL, and in URLs and DSNs
+// anywhere. The log keeps the original.
+func bitqueryScrubUserNames(text string) string {
+	text = bqUserURLParamRe.ReplaceAllString(text, "${1}"+bqUserRedacted)
+	text = bqUserInfoRe.ReplaceAllString(text, "${1}"+bqUserRedacted+"@")
+	if !strings.Contains(text, "user") && !strings.Contains(text, "User") {
+		return text
+	}
+	message, echo := text, ""
+	if loc := bqSQLEchoRe.FindStringIndex(text); loc != nil {
+		message, echo = text[:loc[0]], text[loc[0]:]
+	}
+	for _, shape := range bqUserShapes {
+		message = shape.ReplaceAllString(message, "${1}"+bqUserRedacted+"${3}")
+	}
+	return message + echo
 }
 
 func bitqueryMaskSecrets(text string) string {

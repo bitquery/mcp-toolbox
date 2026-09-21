@@ -71,7 +71,7 @@ const (
 	bqOld516       = "Code: 516, e.displayText() = DB::Exception: no_such_user_errredact: Authentication failed: password is incorrect or there is no user with such name (version 20.8.11.17 (official build))\n"
 )
 
-var bqLeakRe = regexp.MustCompile(`(?i)version|official build|\.local\b|received from|while executing|e\.displayText|__exception__|\[HTTP|sendQuery|response body: "|:9000|chnode|dc426|no_such_user|s3cr3t|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+var bqLeakRe = regexp.MustCompile(`(?i)version|official build|\.local\b|received from|while executing|e\.displayText|__exception__|\[HTTP|sendQuery|response body: "|:9000|chnode|dc426|no_such_user|s3cr3t|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|for user ["'\x60]?(?:mcp|guest|default|svc|someone)|user ["'\x60](?:mcp|someone)|user=mcp`)
 
 func bqAssertClean(t *testing.T, text string) {
 	t.Helper()
@@ -179,12 +179,83 @@ func TestBitqueryCleanDatabaseMessage(t *testing.T) {
 		{desc: "a query echo with slashes, times, maps and URLs survives (synthesized)", code: 47, name: "UNKNOWN_IDENTIFIER",
 			in:   "Code: 47. DB::Exception: Missing columns: 'x' while processing: 'SELECT a / b / c, x, map('k', 1)['k'], toDateTime('2026-09-16 12:30:45'), '2026-09-16T12:30:45', number::UInt32, 'HH:MM:SS', '/api/v1', 'Asia/Dubai' FROM t WHERE u = 'https://example.com/a/b'', required columns: 'x' 'a' 'b' 'c'. (UNKNOWN_IDENTIFIER) (version 25.9.4.58 (official build))",
 			want: "Code: 47. DB::Exception: Missing columns: 'x' while processing: 'SELECT a / b / c, x, map('k', 1)['k'], toDateTime('2026-09-16 12:30:45'), '2026-09-16T12:30:45', number::UInt32, 'HH:MM:SS', '/api/v1', 'Asia/Dubai' FROM t WHERE u = 'https://example.com/a/b'', required columns: 'x' 'a' 'b' 'c'. (UNKNOWN_IDENTIFIER)"},
-		{desc: "a proxy request scope (synthesized)",
+		{desc: "a proxy request scope, and the user it names (synthesized)",
 			in:   `[ Id: 17A2B3C4D5E6F708; User "mcp"(1) proxying as "mcp"(1) to "10.20.30.40:8123"(1); RemoteAddr: "10.20.30.41:51234"; LocalAddr: "10.20.30.42:8123"; Duration: 120000123 μs]: timeout for user "mcp" exceeded: 2m0s`,
-			want: `timeout for user "mcp" exceeded: 2m0s`},
-		{desc: "a secret in key=value form (synthesized)", code: 36, name: "BAD_ARGUMENTS",
+			want: `timeout for user [user] exceeded: 2m0s`},
+		{desc: "a secret and a user in key=value form (synthesized)", code: 36, name: "BAD_ARGUMENTS",
 			in:   "Code: 36. DB::Exception: Bad URL http://example.com/?user=mcp&password=s3cr3t. (BAD_ARGUMENTS) (version 25.9.4.58 (official build))",
-			want: "Code: 36. DB::Exception: Bad URL http://example.com/?user=mcp&password=***. (BAD_ARGUMENTS)"},
+			want: "Code: 36. DB::Exception: Bad URL http://example.com/?user=[user]&password=***. (BAD_ARGUMENTS)"},
+
+		// Too many simultaneous queries (Code 202) names the database user on every
+		// server version. Live texts: see bitquery_busy_retry_test.go.
+		{desc: "25.6 per-user limit, live", in: bqBusy25User, code: 202, name: "TOO_MANY_SIMULTANEOUS_QUERIES",
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for user [user]. Current: 13, maximum: 1. (TOO_MANY_SIMULTANEOUS_QUERIES)"},
+		{desc: "25.6 per-user limit on a connection handshake, as production logs it", in: bqBusy25Handshake, code: 202, name: "TOO_MANY_SIMULTANEOUS_QUERIES",
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for user [user]. Current: 4, maximum: 4. (TOO_MANY_SIMULTANEOUS_QUERIES)"},
+		{desc: "25.6 server-wide limit names no user, live", in: bqBusy25AllUsersArray, code: 202, name: "TOO_MANY_SIMULTANEOUS_QUERIES",
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for all users. Current: 23, maximum: 1. (TOO_MANY_SIMULTANEOUS_QUERIES)"},
+		{desc: "20.8 per-user limit, live", in: bqBusy20User, code: 202,
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for user [user]. Current: 3, maximum: 1"},
+		{desc: "20.8 per-user limit for mcp (synthesized from the live text)", code: 202,
+			in:   "Code: 202, e.displayText() = DB::Exception: Too many simultaneous queries for user mcp. Current: 4, maximum: 4 (version 20.8.11.17 (official build))\n",
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for user [user]. Current: 4, maximum: 4"},
+		{desc: "a dotted user name keeps the sentence's period (synthesized)", code: 202, name: "TOO_MANY_SIMULTANEOUS_QUERIES",
+			in:   "Code: 202. DB::Exception: Too many simultaneous queries for user svc.mcp-2. Current: 4, maximum: 4. (TOO_MANY_SIMULTANEOUS_QUERIES) (version 25.9.4.58 (official build))",
+			want: "Code: 202. DB::Exception: Too many simultaneous queries for user [user]. Current: 4, maximum: 4. (TOO_MANY_SIMULTANEOUS_QUERIES)"},
+		{desc: "25.x quota names the user in backquotes (synthesized)", code: 201, name: "QUOTA_EXCEEDED",
+			in:   "Code: 201. DB::Exception: Quota for user `mcp` for 3600s has been exceeded: queries = 1001/1000. Interval will end at 2026-09-21 11:00:00. Name of quota template: `default`. (QUOTA_EXCEEDED) (version 25.9.4.58 (official build))",
+			want: "Code: 201. DB::Exception: Quota for user [user] for 3600s has been exceeded: queries = 1001/1000. Interval will end at 2026-09-21 11:00:00. Name of quota template: `default`. (QUOTA_EXCEEDED)"},
+		{desc: "20.8 quota (synthesized)", code: 201,
+			in:   "Code: 201, e.displayText() = DB::Exception: Quota for user `default` for 3600s has been exceeded: queries = 1001/1000. Interval will end at 2026-09-21 11:00:00. Name of quota template: `default`. (version 20.8.11.17 (official build))",
+			want: "Code: 201. DB::Exception: Quota for user [user] for 3600s has been exceeded: queries = 1001/1000. Interval will end at 2026-09-21 11:00:00. Name of quota template: `default`."},
+		{desc: "an unknown user in backquotes (synthesized)", code: 192, name: "UNKNOWN_USER",
+			in:   "Code: 192. DB::Exception: There is no user `someone` in user directories. (UNKNOWN_USER) (version 25.9.4.58 (official build))",
+			want: "Code: 192. DB::Exception: There is no user [user] in user directories. (UNKNOWN_USER)"},
+		{desc: "a user that is not allowed (synthesized)", code: 497, name: "ACCESS_DENIED",
+			in:   "Code: 497. DB::Exception: User `mcp` is not allowed to change settings. (ACCESS_DENIED) (version 25.9.4.58 (official build))",
+			want: "Code: 497. DB::Exception: User [user] is not allowed to change settings. (ACCESS_DENIED)"},
+		{desc: "chproxy concurrency limit (synthesized)",
+			in:   `[ Id: 17A2B3C4D5E6F709; User "mcp"(1) proxying as "mcp"(1) to "10.20.30.40:8123"(3); RemoteAddr: "10.20.30.41:51234"; LocalAddr: "10.20.30.42:8123"; Duration: 12 μs]: limits for user "mcp" are exceeded: max_concurrent_queries limit: 4`,
+			want: `limits for user [user] are exceeded: max_concurrent_queries limit: 4`},
+		{desc: "chproxy refusal keeps its query echo (synthesized)",
+			in:   `limits for user "mcp" are exceeded: max_concurrent_queries limit: 4; query: "SELECT 'Too many simultaneous queries for user bob. Current: 1' WHERE user = 'alice'"`,
+			want: `limits for user [user] are exceeded: max_concurrent_queries limit: 4; query: "SELECT 'Too many simultaneous queries for user bob. Current: 1' WHERE user = 'alice'"`},
+		{desc: "chproxy rate limit for a cluster user (synthesized)",
+			in:   `rate limit for cluster user "default" is exceeded: requests_per_minute limit: 100`,
+			want: `rate limit for cluster user [user] is exceeded: requests_per_minute limit: 100`},
+		{desc: "chproxy authentication and access (synthesized)",
+			in:   `invalid username or password for user "mcp"; user "someone" is not allowed to access via http`,
+			want: `invalid username or password for user [user]; user [user] is not allowed to access via http`},
+		{desc: "a DSN names the user and its password (synthesized)", code: 36, name: "BAD_ARGUMENTS",
+			in:   "Code: 36. DB::Exception: Bad URL http://mcp:s3cr3t@example.com/db. (BAD_ARGUMENTS) (version 25.9.4.58 (official build))",
+			want: "Code: 36. DB::Exception: Bad URL http://[user]@example.com/db. (BAD_ARGUMENTS)"},
+
+		// "user" that names no database user stays as it is: SQL echoes (system.processes
+		// and system.query_log have a user column) and guard messages.
+		{desc: "a syntax error echo keeps user columns and quoted names (synthesized)", code: 62, name: "SYNTAX_ERROR",
+			in:   "Code: 62. DB::Exception: Syntax error: failed at position 36 ('FORM'): FORM system.processes WHERE user=currentUser() AND user = 'alice' OR user 'alice' GROUP BY user. Expected one of: token, Comma, FROM. (SYNTAX_ERROR) (version 25.9.4.58 (official build))",
+			want: "Code: 62. DB::Exception: Syntax error: failed at position 36 ('FORM'): FORM system.processes WHERE user=currentUser() AND user = 'alice' OR user 'alice' GROUP BY user. Expected one of: token, Comma, FROM. (SYNTAX_ERROR)"},
+		{desc: "a syntax error echo keeps even a message-like fragment (synthesized)", code: 62, name: "SYNTAX_ERROR",
+			in:   "Code: 62. DB::Exception: Syntax error: failed at position 8 ('Too'): SELECT 'Too many simultaneous queries for user bob. Current: 1' Too. Expected one of: token. (SYNTAX_ERROR) (version 25.9.4.58 (official build))",
+			want: "Code: 62. DB::Exception: Syntax error: failed at position 8 ('Too'): SELECT 'Too many simultaneous queries for user bob. Current: 1' Too. Expected one of: token. (SYNTAX_ERROR)"},
+		{desc: "a query echo keeps user comparisons (synthesized)", code: 47, name: "UNKNOWN_IDENTIFIER",
+			in:   "Code: 47. DB::Exception: Missing columns: 'usr' while processing: 'SELECT usr FROM system.query_log WHERE user=currentUser() OR user=1 GROUP BY user', required columns: 'usr'. (UNKNOWN_IDENTIFIER) (version 25.9.4.58 (official build))",
+			want: "Code: 47. DB::Exception: Missing columns: 'usr' while processing: 'SELECT usr FROM system.query_log WHERE user=currentUser() OR user=1 GROUP BY user', required columns: 'usr'. (UNKNOWN_IDENTIFIER)"},
+		{desc: "a guard message about user wallets stays (synthesized)", code: 395, name: "FUNCTION_THROW_IF_VALUE_IS_NON_ZERO",
+			in:   "Code: 395. DB::Exception: at most 50 addresses for user wallets: while executing 'FUNCTION throwIf(1 :: 0, 'at most 50 addresses for user wallets' :: 1) -> throwIf(1, 'at most 50 addresses for user wallets') UInt8 : 3'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 25.9.4.58 (official build))",
+			want: "invalid request: at most 50 addresses for user wallets"},
+		{desc: "a guard message saying a user word is not allowed stays (synthesized)", code: 395, name: "FUNCTION_THROW_IF_VALUE_IS_NON_ZERO",
+			in:   "Code: 395. DB::Exception: address for user wallets is not allowed: while executing 'FUNCTION throwIf(1 :: 0, 'address for user wallets is not allowed' :: 1) -> throwIf(1, 'address for user wallets is not allowed') UInt8 : 3'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 25.9.4.58 (official build))",
+			want: "invalid request: address for user wallets is not allowed"},
+		{desc: "a URL user before a sentence period keeps the period (synthesized)", code: 36, name: "BAD_ARGUMENTS",
+			in:   "Code: 36. DB::Exception: Bad URL http://example.com/?user=mcp. (BAD_ARGUMENTS) (version 25.9.4.58 (official build))",
+			want: "Code: 36. DB::Exception: Bad URL http://example.com/?user=[user]. (BAD_ARGUMENTS)"},
+		{desc: "the per-user memory limit names no user (synthesized)", code: 241, name: "MEMORY_LIMIT_EXCEEDED",
+			in:   "Code: 241. DB::Exception: Memory limit (for user) exceeded: would use 9.31 GiB (attempt to allocate chunk of 4219648 bytes), maximum: 9.31 GiB. (MEMORY_LIMIT_EXCEEDED) (version 25.9.4.58 (official build))",
+			want: "Code: 241. DB::Exception: Memory limit (for user) exceeded: would use 9.31 GiB (attempt to allocate chunk of 4219648 bytes), maximum: 9.31 GiB. (MEMORY_LIMIT_EXCEEDED)"},
+		{desc: "a query echo naming a user column is left alone (synthesized)", code: 47, name: "UNKNOWN_IDENTIFIER",
+			in:   "Code: 47. DB::Exception: Missing columns: 'usr' while processing: 'SELECT user, usr FROM system.processes WHERE user = 'guest'', required columns: 'usr' 'user'. (UNKNOWN_IDENTIFIER) (version 25.9.4.58 (official build))",
+			want: "Code: 47. DB::Exception: Missing columns: 'usr' while processing: 'SELECT user, usr FROM system.processes WHERE user = 'guest'', required columns: 'usr' 'user'. (UNKNOWN_IDENTIFIER)"},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -211,6 +282,18 @@ func TestBitqueryCleanDatabaseMessageLeavesOtherText(t *testing.T) {
 		`{"exception": "not a database error"}`,
 		"Code: 7 is not a ClickHouse message without its exception name",
 		"the data service did not answer within 180 seconds; the query may be too heavy, narrow it (shorter time window, fewer rows) or retry later",
+		// "user" in prose or SQL, not naming a user
+		"Memory limit (for user) exceeded",
+		"Too many simultaneous queries for all users. Current: 23, maximum: 1",
+		"a limit for user defined functions, set by user-defined settings for user with the id 5",
+		"SELECT count() FROM system.processes WHERE user=currentUser() OR user=1 GROUP BY user",
+		"at most 50 addresses for user wallets",
+		"a user that is not allowed to do this",
+		// Letter case other than the servers print is not a message shape (R2): SQL
+		// writes USER in upper case ("CREATE USER 'x'"), no server writes "for User".
+		"CREATE USER 'alice' IDENTIFIED BY 'x'",
+		"Too many simultaneous queries for User alice. Current: 4, maximum: 4",
+		"select count() from system.processes group by user order by count() desc",
 	} {
 		if got, _, _, changed := BitqueryCleanDatabaseMessage(in); changed || got != strings.TrimSpace(in) {
 			t.Errorf("BitqueryCleanDatabaseMessage(%q) = %q, changed=%v", in, got, changed)

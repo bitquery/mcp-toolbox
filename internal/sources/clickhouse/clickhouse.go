@@ -82,7 +82,9 @@ func (r Config) Initialize(ctx context.Context, tracer trace.Tracer) (sources.So
 		return nil, fmt.Errorf("unable to create pool: %w", err)
 	}
 
-	err = pool.PingContext(ctx)
+	// Bitquery: a start while the database user is at its concurrent-query limit
+	// (Code 202) pings again after a short pause instead of failing the server.
+	err = util.BitqueryRetryBusyCall(ctx, r.Name, func() error { return pool.PingContext(ctx) })
 	if err != nil {
 		return nil, fmt.Errorf("unable to connect successfully: %w", err)
 	}
@@ -135,7 +137,13 @@ func (s *Source) RunSQL(ctx context.Context, statement string, params parameters
 		ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(qid))
 	}
 
-	results, err := s.ClickHousePool().QueryContext(ctx, statement, sliceParams...)
+	// Bitquery: a query refused for too many simultaneous queries (Code 202) is
+	// sent again after a short pause — also when the refused query was the
+	// handshake of a new connection. No row has been read at this point; a failure
+	// while reading rows (results.Err below) is never retried.
+	results, err := util.BitqueryRetryBusy(ctx, s.Name, func() (*sql.Rows, error) {
+		return s.ClickHousePool().QueryContext(ctx, statement, sliceParams...)
+	})
 	if err != nil {
 		// Bitquery: over the HTTP protocol a connect/timeout failure prints the
 		// request URL (internal host, port, database, query_id); log it and return an

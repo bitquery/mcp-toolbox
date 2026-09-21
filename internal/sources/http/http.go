@@ -17,7 +17,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -209,20 +208,13 @@ func (s *Source) Client() *http.Client {
 }
 
 func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error) {
-	// Make request and fetch response
-	resp, err := s.Client().Do(req)
+	// Make request and fetch response. Bitquery: the whole body is read (and the
+	// response closed) by bitqueryRoundTrip, which also sends the request again
+	// after a short pause while ClickHouse refuses it for too many simultaneous
+	// queries (see bitquery_busy_retry.go).
+	resp, body, err := s.bitqueryRoundTrip(ctx, req)
 	if err != nil {
-		// Bitquery: a transport error prints the request URL (internal host, port,
-		// query params); log it and hand the caller an address-free message instead.
-		return nil, fmt.Errorf("error making HTTP request: %w", util.BitqueryTransportFailure(ctx, s.Name, err, s.bitqueryTimeout(req)))
-	}
-	defer resp.Body.Close()
-
-	var body []byte
-	body, err = io.ReadAll(resp.Body)
-	if err != nil {
-		// Bitquery: a body read cut by the timeout or a reset names the peer IPs.
-		return nil, util.BitqueryTransportFailure(ctx, s.Name, err, s.bitqueryTimeout(req))
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if s.ReturnFullError {
