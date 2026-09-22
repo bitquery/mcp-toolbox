@@ -673,14 +673,47 @@ func applyEscape(escape, v string) (any, error) {
 		escaped := strings.ReplaceAll(v, `"`, `""`)
 		return fmt.Sprintf(`"%s"`, escaped), nil
 	case escapeSingleQuotes:
-		escaped := strings.ReplaceAll(v, `'`, `''`)
-		return fmt.Sprintf(`'%s'`, escaped), nil
+		return quoteSingleQuotedLiteral(v), nil
 	case escapeSquareBrackets:
 		escaped := strings.ReplaceAll(v, "]", "]]")
 		return fmt.Sprintf("[%s]", escaped), nil
 	default:
 		return nil, fmt.Errorf("%s is not an allowed escaping delimiter", escape)
 	}
+}
+
+// Bitquery: quoteSingleQuotedLiteral renders v as a single-quoted SQL string
+// literal that ClickHouse decodes back to exactly v.
+//
+// ClickHouse (like MySQL and BigQuery) honours C-style backslash escapes inside
+// a quoted string: \\ is one backslash, \' is a quote, \n \t \0 \xHH ... are
+// control bytes, and an unknown escape such as \d or \% keeps its backslash.
+// Doubling only the quote therefore left a hole; the old rendering was
+//
+//	x\' OR 1=1 --   ->   'x\'' OR 1=1 --'
+//	abc\            ->   'abc\'
+//
+// where \' is a literal quote, the next quote closes the string and the rest
+// runs as SQL (or, with a trailing backslash, the closing quote is swallowed).
+// Every backslash is now doubled as well:
+//
+//	x\' OR 1=1 --   ->   'x\\'' OR 1=1 --'
+//	abc\            ->   'abc\\'
+//
+// Neither replacement produces the other's byte, so their order does not
+// matter. A quote stays doubled rather than backslash-escaped: ClickHouse reads
+// both the same. Checked on ClickHouse 20.8, 25.6 and 25.9: the literal decodes
+// to the input byte for byte, including \d, \% and \n typed literally.
+//
+// Dialects with standard_conforming_strings (PostgreSQL, SQLite) treat a
+// backslash as an ordinary character, so there a value containing one now
+// reaches the database with its backslashes doubled. That can make such a
+// value match nothing, but it can never end the literal early; the Bitquery
+// config uses this escape only on ClickHouse sources.
+func quoteSingleQuotedLiteral(v string) string {
+	escaped := strings.ReplaceAll(v, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `''`)
+	return `'` + escaped + `'`
 }
 
 func (p *StringParameter) GetAuthServices() []ParamAuthService {
