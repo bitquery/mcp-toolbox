@@ -39,10 +39,11 @@ import (
 // a "%w" chain cannot reach the original text; errors.Is and errors.As still see
 // the original error through the Is and As methods.
 type BitqueryDatabaseError struct {
-	msg   string
-	code  int
-	name  string
-	cause error
+	msg     string
+	message string
+	code    int
+	name    string
+	cause   error
 }
 
 func (e *BitqueryDatabaseError) Error() string { return e.msg }
@@ -54,6 +55,12 @@ func (e *BitqueryDatabaseError) Code() int { return e.code }
 // Name is the ClickHouse error code name (e.g. "TOO_SLOW"), empty when the
 // server did not print one (older servers never do).
 func (e *BitqueryDatabaseError) Name() string { return e.name }
+
+// Message is the cleaned text on its own, without the framing Error() adds for
+// the shape the failure had ("unexpected status code: N, response body: ",
+// "query failed after N result rows had been sent"). For a throwIf guard
+// (code 395) it is "invalid request: <the guard author's message>".
+func (e *BitqueryDatabaseError) Message() string { return e.message }
 
 func (e *BitqueryDatabaseError) Is(target error) bool {
 	return e.cause != nil && errors.Is(e.cause, target)
@@ -84,7 +91,7 @@ func BitqueryDatabaseFailure(ctx context.Context, sourceName string, err error) 
 	if !changed {
 		return err
 	}
-	dbErr := &BitqueryDatabaseError{msg: msg, code: code, name: name, cause: err}
+	dbErr := &BitqueryDatabaseError{msg: msg, message: msg, code: code, name: name, cause: err}
 	bitqueryLogDatabaseError(ctx, sourceName, dbErr, original)
 	return dbErr
 }
@@ -99,10 +106,11 @@ func BitqueryDatabaseErrorResponse(ctx context.Context, sourceName string, statu
 		return original
 	}
 	dbErr := &BitqueryDatabaseError{
-		msg:   fmt.Sprintf("unexpected status code: %d, response body: %s", status, msg),
-		code:  code,
-		name:  name,
-		cause: original,
+		msg:     fmt.Sprintf("unexpected status code: %d, response body: %s", status, msg),
+		message: msg,
+		code:    code,
+		name:    name,
+		cause:   original,
 	}
 	bitqueryLogDatabaseError(ctx, sourceName, dbErr, original.Error())
 	return dbErr
@@ -119,7 +127,7 @@ func BitqueryDatabaseErrorInResult(ctx context.Context, sourceName string, rows 
 	if rows > 0 {
 		reported = fmt.Sprintf("query failed after %d result rows had been sent (partial result discarded): %s", rows, msg)
 	}
-	dbErr := &BitqueryDatabaseError{msg: reported, code: code, name: name, cause: original}
+	dbErr := &BitqueryDatabaseError{msg: reported, message: msg, code: code, name: name, cause: original}
 	bitqueryLogDatabaseError(ctx, sourceName, dbErr, original.Error())
 	return dbErr
 }

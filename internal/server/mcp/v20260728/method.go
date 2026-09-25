@@ -464,12 +464,30 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 			}
 		}
 		if err != nil {
-			execAttrs = append(execAttrs, attribute.String("error.type", err.Error()))
+			// Bitquery: a guard a tool raised on the caller's arguments carries the
+			// guard author's message, and on a raw-SQL hatch that message is text
+			// the CALLER wrote. A metric attribute keeps one series per distinct
+			// value for the whole retention, so a refusal records the KIND of
+			// failure instead — the same name the operation metric derives from
+			// this JSON-RPC code. Every other error keeps the text it had.
+			errorType := err.Error()
+			if _, refused := util.BitqueryInvalidParamsRefusal(err); refused {
+				errorType = jsonrpc.Error{Code: jsonrpc.INVALID_PARAMS}.String()
+			}
+			execAttrs = append(execAttrs, attribute.String("error.type", errorType))
 		}
 		instrumentation.ToolExecutionDuration.Record(ctx, executionDuration, metric.WithAttributes(execAttrs...))
 	}
 
 	if err != nil {
+		// Bitquery: a guard a tool raised on the caller's own arguments (a rule
+		// between two parameters, which a parameter schema cannot state) is a
+		// refusal of those arguments, not a failed call — report it exactly like
+		// a value a parameter's allowedValues rejected above.
+		if refusal, ok := util.BitqueryInvalidParamsRefusal(err); ok {
+			return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, refusal, nil), err
+		}
+
 		var tbErr util.ToolboxError
 
 		if errors.As(err, &tbErr) {
