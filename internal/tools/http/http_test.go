@@ -31,6 +31,7 @@ func TestParseFromYamlHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
+	trueVal := true
 	tcs := []struct {
 		desc string
 		in   string
@@ -138,6 +139,35 @@ func TestParseFromYamlHTTP(t *testing.T) {
 					BodyParams:   []parameters.Parameter{parameters.NewIntParameter("age", "age num"), parameters.NewStringParameter("city", "city string")},
 					Headers:      map[string]string{"Authorization": "API_KEY", "Content-Type": "application/json"},
 					HeaderParams: []parameters.Parameter{parameters.NewStringParameter("Language", "language string")},
+				},
+			},
+		},
+		{
+			desc: "annotations with a title",
+			in: `
+			kind: tool
+			name: example_tool
+			type: http
+			source: my-instance
+			method: GET
+			description: some description
+			path: search
+			annotations:
+				title: Example search
+				readOnlyHint: true
+			`,
+			want: server.ToolConfigs{
+				"example_tool": http.Config{
+					ConfigBase: tools.ConfigBase{
+						Name:         "example_tool",
+						Description:  "some description",
+						AuthRequired: []string{},
+					},
+					Type:        "http",
+					Source:      "my-instance",
+					Method:      "GET",
+					Path:        "search",
+					Annotations: &tools.ToolAnnotations{Title: "Example search", ReadOnlyHint: &trueVal},
 				},
 			},
 		},

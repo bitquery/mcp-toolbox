@@ -116,6 +116,22 @@ var prompt2Args = []any{
 // TestMcpEndpointWithoutInitialized is expecting Toolbox to response with the
 // v2024-11-05 version. This was a customs transport that we implemented during
 // the initial integration of MCP within Toolbox.
+// listedWithTitles returns the expected tools/list entries with the title the
+// server derives from each tool's name: `annotations.title` in every protocol
+// version and, when toolLevel is set (protocol version 2025-06-18 and later),
+// the tool's own `title` as well.
+func listedWithTitles(toolLevel bool, entries ...any) []any {
+	for _, e := range entries {
+		entry := e.(map[string]any)
+		title := tools.DefaultTitle(entry["name"].(string))
+		entry["annotations"] = map[string]any{"title": title}
+		if toolLevel {
+			entry["title"] = title
+		}
+	}
+	return entries
+}
+
 func TestMcpEndpointWithoutInitialized(t *testing.T) {
 	mockTools := []testutils.MockTool{testutils.MockTool1, testutils.MockTool2, testutils.MockTool3, testutils.MockTool4, testutils.MockTool5}
 	mockPrompts := []testutils.MockPrompt{testutils.MockPrompt1, testutils.MockPrompt2}
@@ -164,7 +180,7 @@ func TestMcpEndpointWithoutInitialized(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      "tools-list",
 				"result": map[string]any{
-					"tools": []any{
+					"tools": listedWithTitles(false,
 						map[string]any{
 							"name":        "no_params",
 							"inputSchema": basicInputSchema,
@@ -186,7 +202,7 @@ func TestMcpEndpointWithoutInitialized(t *testing.T) {
 							"name":        "require_client_auth_tool",
 							"inputSchema": basicInputSchema,
 						},
-					},
+					),
 				},
 			},
 		},
@@ -580,7 +596,7 @@ func TestMcpEndpoint(t *testing.T) {
 				"id":      "tools-list",
 				"result": map[string]any{
 					"resultType": "complete",
-					"tools": []any{
+					"tools": listedWithTitles(true,
 						map[string]any{
 							"name":        "no_params",
 							"inputSchema": basicInputSchema,
@@ -607,7 +623,7 @@ func TestMcpEndpoint(t *testing.T) {
 							"description": "A tool for testing URL param binding",
 							"inputSchema": urlBindingToolInputSchema,
 						},
-					},
+					),
 					"ttlMs":      300000.0,
 					"cacheScope": "public",
 					"_meta": map[string]any{
@@ -660,12 +676,12 @@ func TestMcpEndpoint(t *testing.T) {
 				"id":      "tools-list-tool1",
 				"result": map[string]any{
 					"resultType": "complete",
-					"tools": []any{
+					"tools": listedWithTitles(true,
 						map[string]any{
 							"name":        "no_params",
 							"inputSchema": basicInputSchema,
 						},
-					},
+					),
 					"ttlMs":      300000.0,
 					"cacheScope": "public",
 					"_meta": map[string]any{
@@ -694,7 +710,7 @@ func TestMcpEndpoint(t *testing.T) {
 				"id":      "tools-list-url-binding",
 				"result": map[string]any{
 					"resultType": "complete",
-					"tools": []any{
+					"tools": listedWithTitles(true,
 						map[string]any{
 							"name":        "no_params",
 							"inputSchema": basicInputSchema,
@@ -727,7 +743,7 @@ func TestMcpEndpoint(t *testing.T) {
 								"required": []any{"param5"},
 							},
 						},
-					},
+					),
 					"_meta": map[string]any{
 						"io.modelcontextprotocol/serverInfo": map[string]any{"name": serverName, "version": testutils.MockVersionString},
 					},
@@ -872,7 +888,7 @@ func TestMcpEndpoint(t *testing.T) {
 						"jsonrpc": "2.0",
 						"id":      "tools-list",
 						"result": map[string]any{
-							"tools": []any{
+							"tools": listedWithTitles(vtc.protocol >= protocolVersion20250618,
 								map[string]any{
 									"name":        "no_params",
 									"inputSchema": basicInputSchema,
@@ -899,7 +915,7 @@ func TestMcpEndpoint(t *testing.T) {
 									"description": "A tool for testing URL param binding",
 									"inputSchema": urlBindingToolInputSchema,
 								},
-							},
+							),
 						},
 					},
 					wantOverwrite: vtc.wantToolsList,
@@ -984,12 +1000,12 @@ func TestMcpEndpoint(t *testing.T) {
 						"jsonrpc": "2.0",
 						"id":      "tools-list-tool1",
 						"result": map[string]any{
-							"tools": []any{
+							"tools": listedWithTitles(vtc.protocol >= protocolVersion20250618,
 								map[string]any{
 									"name":        "no_params",
 									"inputSchema": basicInputSchema,
 								},
-							},
+							),
 						},
 					},
 					wantOverwrite: vtc.wantToolsListOnTool1,
@@ -1203,7 +1219,7 @@ func TestMcpEndpoint(t *testing.T) {
 						"jsonrpc": "2.0",
 						"id":      "tools-list-url-binding",
 						"result": map[string]any{
-							"tools": []any{
+							"tools": listedWithTitles(vtc.protocol >= protocolVersion20250618,
 								map[string]any{
 									"name":        "no_params",
 									"inputSchema": basicInputSchema,
@@ -1236,7 +1252,7 @@ func TestMcpEndpoint(t *testing.T) {
 										"required": []any{"param5"},
 									},
 								},
-							},
+							),
 						},
 					},
 					wantOverwrite: vtc.wantToolsListWithURLParam,

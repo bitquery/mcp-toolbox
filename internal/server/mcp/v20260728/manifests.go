@@ -29,18 +29,21 @@ import (
 // generateToolManifest generates Tool for list tools result
 func generateToolManifest(name, desc string, authInvoke []string, params parameters.Parameters, annotations *tools.ToolAnnotations, urlParams map[string]string) Tool {
 	inputSchema, authParams := generateParamManifest(params, urlParams)
-	var toolAnnotations *ToolAnnotations
+	// A tool is never listed without a title: the one set in its annotations,
+	// or one derived from its name. It goes out as the tool's own `title` and
+	// as `annotations.title`.
+	title := tools.TitleOrDefault(name, annotations)
+	toolAnnotations := &ToolAnnotations{Title: title}
 	if annotations != nil {
-		toolAnnotations = &ToolAnnotations{
-			DestructiveHint: annotations.DestructiveHint,
-			IdempotentHint:  annotations.IdempotentHint,
-			OpenWorldHint:   annotations.OpenWorldHint,
-			ReadOnlyHint:    annotations.ReadOnlyHint,
-		}
+		toolAnnotations.DestructiveHint = annotations.DestructiveHint
+		toolAnnotations.IdempotentHint = annotations.IdempotentHint
+		toolAnnotations.OpenWorldHint = annotations.OpenWorldHint
+		toolAnnotations.ReadOnlyHint = annotations.ReadOnlyHint
 	}
 	mcpManifest := Tool{
 		BaseMetadata: BaseMetadata{
-			Name: name,
+			Name:  name,
+			Title: title,
 		},
 		Description:     desc,
 		ToolInputSchema: inputSchema,

@@ -299,6 +299,7 @@ and provide appropriate user experiences.
 
 | **annotation**     |  **type**   | **default** | **description**                                                        |
 |--------------------|:-----------:|:-----------:|------------------------------------------------------------------------|
+| title              |   string    | from `name` | Human-readable display name of the tool.                               |
 | readOnlyHint       |    bool     |    false    | Tool only reads data, no modifications to the environment.             |
 | destructiveHint    |    bool     |    true     | Tool may create, update, or delete data.                               |
 | idempotentHint     |    bool     |    false    | Repeated calls with same arguments have no additional effect.          |
@@ -317,6 +318,7 @@ description: Find a single document
 database: mydb
 collection: users
 annotations:
+  title: Find a user
   readOnlyHint: true
   idempotentHint: true
 ```
@@ -328,16 +330,26 @@ If not specified, tools use sensible defaults based on their operation type:
 - **Read operations** (find, aggregate, list): `readOnlyHint: true`
 - **Write operations** (insert, update, delete): `destructiveHint: true`, `readOnlyHint: false`
 
+A tool is never listed without a title. When `title` is not set (or is blank),
+one is derived from the tool name: its words, split on `_`, `-`, `.` and spaces,
+each with the first letter in upper case — `my_query_tool` is listed as
+`My Query Tool`.
+
 ### MCP Client Response
 
-Annotations appear in the `tools/list` MCP response:
+Annotations appear in the `tools/list` MCP response. The title is sent as
+`annotations.title` in every protocol version and, from protocol version
+`2025-06-18` on, also as the tool's own `title`:
 
 ```json
 {
   "name": "my_query_tool",
+  "title": "Find a user",
   "description": "Find a single document",
   "annotations": {
-    "readOnlyHint": true
+    "title": "Find a user",
+    "readOnlyHint": true,
+    "idempotentHint": true
   }
 }
 ```

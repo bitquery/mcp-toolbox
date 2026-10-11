@@ -82,6 +82,52 @@ func TestBaseToolGetters(t *testing.T) {
 	}
 }
 
+func TestDefaultTitle(t *testing.T) {
+	tcs := []struct {
+		name string
+		want string
+	}{
+		{"eth_transfers_in", "Eth Transfers In"},
+		{"execute_sql", "Execute Sql"},
+		{"my-tool", "My Tool"},
+		{"list.tables", "List Tables"},
+		{"already Titled", "Already Titled"},
+		{"__double__underscore__", "Double Underscore"},
+		{"único_nombre", "Único Nombre"},
+		{"x", "X"},
+		{"", ""},
+		{"___", "___"},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tools.DefaultTitle(tc.name); got != tc.want {
+				t.Errorf("DefaultTitle(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTitleOrDefault(t *testing.T) {
+	tcs := []struct {
+		desc        string
+		annotations *tools.ToolAnnotations
+		want        string
+	}{
+		{"nil annotations fall back to the name", nil, "Eth Transfers In"},
+		{"annotations without a title fall back to the name", tools.NewReadOnlyAnnotations(), "Eth Transfers In"},
+		{"a blank title falls back to the name", &tools.ToolAnnotations{Title: " \t"}, "Eth Transfers In"},
+		{"a set title wins", &tools.ToolAnnotations{Title: "Ethereum: incoming transfers"}, "Ethereum: incoming transfers"},
+		{"a set title is trimmed", &tools.ToolAnnotations{Title: "  Incoming transfers "}, "Incoming transfers"},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.desc, func(t *testing.T) {
+			if got := tools.TitleOrDefault("eth_transfers_in", tc.annotations); got != tc.want {
+				t.Errorf("TitleOrDefault() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBaseToolAuthorized(t *testing.T) {
 	tcs := []struct {
 		desc         string

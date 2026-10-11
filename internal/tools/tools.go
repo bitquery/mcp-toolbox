@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
@@ -72,10 +74,43 @@ type ToolConfig interface {
 
 // https://modelcontextprotocol.io/specification/2025-06-18/schema#toolannotations
 type ToolAnnotations struct {
-	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
-	IdempotentHint  *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
-	OpenWorldHint   *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
-	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
+	// Title is the human-readable display name of the tool. When it is empty
+	// the MCP manifests list the tool under DefaultTitle(name), so a tool is
+	// never listed without a title.
+	Title           string `json:"title,omitempty" yaml:"title,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
+}
+
+// DefaultTitle derives a display title from a tool name: its words, split on
+// underscores, hyphens, dots and spaces, each with the first letter in upper
+// case ("eth_transfers_in" becomes "Eth Transfers In"). A name with no word in
+// it is returned unchanged.
+func DefaultTitle(name string) string {
+	words := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '_' || r == '-' || r == '.' || unicode.IsSpace(r)
+	})
+	if len(words) == 0 {
+		return name
+	}
+	for i, w := range words {
+		r, size := utf8.DecodeRuneInString(w)
+		words[i] = string(unicode.ToUpper(r)) + w[size:]
+	}
+	return strings.Join(words, " ")
+}
+
+// TitleOrDefault returns the title set in the tool's annotations, or
+// DefaultTitle(name) when the annotations are nil or carry no title.
+func TitleOrDefault(name string, annotations *ToolAnnotations) string {
+	if annotations != nil {
+		if title := strings.TrimSpace(annotations.Title); title != "" {
+			return title
+		}
+	}
+	return DefaultTitle(name)
 }
 
 // NewReadOnlyAnnotations creates default annotations for a read-only tool.

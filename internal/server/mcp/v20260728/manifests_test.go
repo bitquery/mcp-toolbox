@@ -69,7 +69,7 @@ func TestGenerateToolManifest(t *testing.T) {
 			params:          parameters.Parameters{parameters.NewStringParameter("string-param", "string parameter")},
 			annotations:     &tools.ToolAnnotations{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal},
 			wantMetadata:    nil,
-			wantAnnotations: []byte(`{"readOnlyHint":true,"destructiveHint":false}`),
+			wantAnnotations: []byte(`{"title":"Basic","readOnlyHint":true,"destructiveHint":false}`),
 		},
 		{
 			desc:         "with auth invoke metadata",
@@ -124,6 +124,60 @@ func TestGenerateToolManifest(t *testing.T) {
 				if diff := cmp.Diff(tc.wantAnnotations, annotations); diff != "" {
 					t.Fatalf("unexpected annotations (-want +got):\n%s", diff)
 				}
+			}
+		})
+	}
+}
+
+func TestGenerateToolManifestTitle(t *testing.T) {
+	trueVal := true
+	tcs := []struct {
+		desc            string
+		annotations     *tools.ToolAnnotations
+		wantTitle       string
+		wantAnnotations string
+	}{
+		{
+			desc:            "no annotations: the title is derived from the name",
+			annotations:     nil,
+			wantTitle:       "Eth Transfers In",
+			wantAnnotations: `{"title":"Eth Transfers In"}`,
+		},
+		{
+			desc:            "annotations without a title: derived title, hints kept",
+			annotations:     &tools.ToolAnnotations{ReadOnlyHint: &trueVal},
+			wantTitle:       "Eth Transfers In",
+			wantAnnotations: `{"title":"Eth Transfers In","readOnlyHint":true}`,
+		},
+		{
+			desc:            "a blank title counts as none",
+			annotations:     &tools.ToolAnnotations{Title: "  ", ReadOnlyHint: &trueVal},
+			wantTitle:       "Eth Transfers In",
+			wantAnnotations: `{"title":"Eth Transfers In","readOnlyHint":true}`,
+		},
+		{
+			desc:            "a configured title wins over the derived one",
+			annotations:     &tools.ToolAnnotations{Title: "Ethereum: incoming transfers", ReadOnlyHint: &trueVal},
+			wantTitle:       "Ethereum: incoming transfers",
+			wantAnnotations: `{"title":"Ethereum: incoming transfers","readOnlyHint":true}`,
+		},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.desc, func(t *testing.T) {
+			got := generateToolManifest("eth_transfers_in", "foo bar", nil, parameters.Parameters{}, tc.annotations, nil)
+			raw, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("error marshaling the tool: %s", err)
+			}
+			var listed map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &listed); err != nil {
+				t.Fatalf("error unmarshaling the tool: %s", err)
+			}
+			if diff := cmp.Diff(tc.wantAnnotations, string(listed["annotations"])); diff != "" {
+				t.Fatalf("unexpected annotations (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(`"`+tc.wantTitle+`"`, string(listed["title"])); diff != "" {
+				t.Fatalf("unexpected tool-level title (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -262,8 +316,9 @@ func TestGenerateListToolsResult(t *testing.T) {
 		},
 		Tools: []Tool{
 			Tool{
-				BaseMetadata: BaseMetadata{Name: "no_params"},
+				BaseMetadata: BaseMetadata{Name: "no_params", Title: "No Params"},
 				Description:  "",
+				Annotations:  &ToolAnnotations{Title: "No Params"},
 				ToolInputSchema: InputSchema{
 					Type:       "object",
 					Properties: map[string]parameters.ParameterMcpManifest{},
@@ -271,8 +326,9 @@ func TestGenerateListToolsResult(t *testing.T) {
 				},
 			},
 			Tool{
-				BaseMetadata: BaseMetadata{Name: "some_params"},
+				BaseMetadata: BaseMetadata{Name: "some_params", Title: "Some Params"},
 				Description:  "",
+				Annotations:  &ToolAnnotations{Title: "Some Params"},
 				ToolInputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]parameters.ParameterMcpManifest{
