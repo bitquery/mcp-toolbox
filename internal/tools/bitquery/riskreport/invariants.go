@@ -107,7 +107,7 @@ func reconcile(rep *reportOut, s *search, dirs []direction, edges edgesResult, r
 			if r == "hub" {
 				unknown := 0
 				for a := range s.cutAddrs[d][r] {
-					if s.hubNote[a] != "" {
+					if s.hubUnmeasured[a] {
 						unknown++
 					}
 				}

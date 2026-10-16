@@ -16,7 +16,10 @@ package riskreport
 
 // Running the statements: one at a time, each billed to the caller through its
 // own query_id, each counted in the report's cost, and none started once the
-// report's row budget is spent.
+// report's row budget is spent, or when the report's deadline is too close for
+// it. The deadline is the server's too: a statement's max_execution_time is the
+// time left, and the server cancels a read-only HTTP query whose client went
+// away, so a statement the report gave up on does not run on, billed.
 
 import (
 	"context"
@@ -37,6 +40,45 @@ type executor struct {
 	labels sqlSource
 	th     Thresholds
 	cost   costOut
+	// last is how long the last statement of each kind took.
+	last map[string]time.Duration
+}
+
+// errNoTime stops a statement the report's deadline leaves no time for.
+var errNoTime = fmt.Errorf("the report's deadline is too close to start another statement")
+
+// minStartSeconds is the least time left in which a statement is started.
+const minStartSeconds = 5
+
+// secs is a statement's max_execution_time: statement_max_seconds, or the
+// whole seconds left before the report's deadline when fewer, at least 1.
+func (e *executor) secs(ctx context.Context) int {
+	s := e.th.StatementMaxSeconds
+	if dl, ok := ctx.Deadline(); ok {
+		s = min(s, int(time.Until(dl)/time.Second))
+	}
+	return max(1, s)
+}
+
+// mayStart refuses a statement when the time left before the report's deadline
+// is under the larger of 5 seconds and the last statement of the same kind.
+func (e *executor) mayStart(ctx context.Context, kind string) error {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	need := max(minStartSeconds*time.Second, e.last[kind])
+	if time.Until(dl) < need {
+		return errNoTime
+	}
+	return nil
+}
+
+func (e *executor) took(kind string, d time.Duration) {
+	if e.last == nil {
+		e.last = map[string]time.Duration{}
+	}
+	e.last[kind] = d
 }
 
 // errBudget stops a report whose statements have read its row budget.
@@ -52,6 +94,9 @@ func (e *executor) maxRows() (int64, error) {
 
 // query posts one statement to the chain source and returns its rows.
 func (e *executor) query(ctx context.Context, name, table, statement string) ([]map[string]any, error) {
+	if err := e.mayStart(ctx, name); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	u, err := url.Parse(strings.TrimRight(e.src.HttpBaseURL(), "/") + "/")
 	if err != nil {
@@ -83,7 +128,12 @@ func (e *executor) query(ctx context.Context, name, table, statement string) ([]
 	}
 	req.Header.Set("X-Bitquery-Table", table)
 	resp, err := e.src.RunRequest(ctx, req)
+	e.took(name, time.Since(start))
 	if err != nil {
+		// A refused or failed statement is listed too: it was sent, and may
+		// have read before it stopped.
+		e.cost.Statements++
+		e.cost.Detail = append(e.cost.Detail, statementCost{Name: name + " (failed)", ElapsedMS: time.Since(start).Milliseconds()})
 		return nil, err
 	}
 	doc, ok := resp.(map[string]any)
@@ -214,7 +264,7 @@ func (e *executor) assets(ctx context.Context, addr string, w window) (assetsRes
 	if err != nil {
 		return assetsResult{}, err
 	}
-	rows, err := e.query(ctx, "assets", tronSender, assetsStatement(addr, w, maxRows, e.th.StatementMaxSeconds))
+	rows, err := e.query(ctx, "assets", tronSender, assetsStatement(addr, w, maxRows, e.secs(ctx)))
 	if err != nil {
 		return assetsResult{}, err
 	}
@@ -325,7 +375,7 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 	if err != nil {
 		return edgesResult{}, otherResult{}, err
 	}
-	in.MaxRows, in.MaxSecs = maxRows, e.th.StatementMaxSeconds
+	in.MaxRows, in.MaxSecs = maxRows, e.secs(ctx)
 	rows, err := e.query(ctx, "counterparties", tronSender, counterpartiesStatement(in))
 	if err != nil {
 		return edgesResult{}, otherResult{}, err
@@ -375,8 +425,12 @@ func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) 
 	out := map[string][]labelRow{}
 	for i := 0; i < len(uniq); i += e.th.LabelBatch {
 		batch := uniq[i:min(i+e.th.LabelBatch, len(uniq))]
+		if err := e.mayStart(ctx, "labels"); err != nil {
+			return nil, err
+		}
 		start := time.Now()
-		res, err := e.labels.RunSQL(ctx, labelsStatement(chain, batch, e.th.StatementMaxRows, e.th.StatementMaxSeconds), nil)
+		res, err := e.labels.RunSQL(ctx, labelsStatement(chain, batch, e.th.StatementMaxRows, e.secs(ctx)), nil)
+		e.took("labels", time.Since(start))
 		if err != nil {
 			return nil, err
 		}

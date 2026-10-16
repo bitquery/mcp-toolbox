@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,8 +41,10 @@ type fakeChain struct {
 	urls                 []string
 
 	transfers []fakeTransfer
-	degree    map[string]int  // transfers per table; else counted from transfers
-	overflow  map[string]bool // a degree read holding the address overflows its row budget
+	// readCost is the rows a history read of the address costs on each table.
+	// A statement whose addresses cost more than its max_rows_to_read is
+	// refused before it starts (Code 158), as the server does.
+	readCost  map[string]int64
 	granules  map[string]int  // EXPLAIN: primary-key granules (else 1)
 	noGranule map[string]bool // EXPLAIN: a text without a granule count
 }
@@ -97,38 +101,28 @@ func (f *fakeChain) addresses() []string {
 		add(t.from)
 		add(t.to)
 	}
-	for a := range f.degree {
-		add(a)
-	}
-	for a := range f.overflow {
+	for a := range f.readCost {
 		add(a)
 	}
 	return out
 }
 
-func (f *fakeChain) degreeRows(ctx context.Context, s string) ([]map[string]any, error) {
-	in := strings.Contains(s, "FROM "+tronReceiver)
-	var rows []map[string]any
-	for _, a := range f.addresses() {
-		if !mentioned(s, a) {
-			continue
-		}
-		if f.overflow[a] {
-			return nil, util.BitqueryDatabaseErrorResponse(ctx, "fake", 500, []byte("Code: 158. DB::Exception: Limit for rows (controlled by 'max_rows_to_read' setting) exceeded, max rows: 1.01 million, current rows: 114.14 million. (TOO_MANY_ROWS) (version 26.8.7.19 (official build))"))
-		}
-		n, ok := f.degree[a]
-		if !ok {
-			for _, t := range f.transfers {
-				if (in && t.to == a) || (!in && t.from == a) {
-					n++
-				}
-			}
-		}
-		if n > 0 {
-			rows = append(rows, map[string]any{"Address": a, "Degree": float64(n)})
+var maxRowsRe = regexp.MustCompile(`max_rows_to_read = ([0-9]+)`)
+
+// cost is what a history statement reads, and whether it is refused for it.
+func (f *fakeChain) cost(ctx context.Context, s string) (int64, error) {
+	var c int64
+	for a, n := range f.readCost {
+		if mentioned(s, a) {
+			c += n
 		}
 	}
-	return rows, nil
+	if m := maxRowsRe.FindStringSubmatch(s); m != nil {
+		if limit, _ := strconv.ParseInt(m[1], 10, 64); c > limit {
+			return c, util.BitqueryDatabaseErrorResponse(ctx, "fake", 500, []byte(fmt.Sprintf("Code: 158. DB::Exception: Limit for rows (controlled by 'max_rows_to_read' setting) exceeded, max rows: %d, current rows: %d. (TOO_MANY_ROWS) (version 26.8.7.19 (official build))", limit, c)))
+		}
+	}
+	return c, nil
 }
 
 func (f *fakeChain) historyRows(s string) []map[string]any {
@@ -164,6 +158,7 @@ func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, err
 	f.statements = append(f.statements, s)
 	f.urls = append(f.urls, req.URL.String())
 	var rows []map[string]any
+	read := int64(1000)
 	switch {
 	case strings.Contains(s, "GROUP BY Native, SC, AssetId"):
 		rows = f.assets
@@ -178,12 +173,14 @@ func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, err
 		}
 	case strings.HasPrefix(s, "EXPLAIN"):
 		rows = f.explainRows(s)
-	case strings.Contains(s, "AS Degree"):
-		var err error
-		if rows, err = f.degreeRows(ctx, s); err != nil {
+	case strings.Contains(s, "AS Peer"):
+		c, err := f.cost(ctx, s)
+		if err != nil {
 			return nil, err
 		}
-	case strings.Contains(s, "AS Peer"):
+		if c > 0 {
+			read = c
+		}
 		rows = f.historyRows(s)
 	}
 	data := make([]any, len(rows))
@@ -191,7 +188,7 @@ func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, err
 		data[i] = r
 	}
 	return map[string]any{"data": data, "rows": float64(len(rows)),
-		"statistics": map[string]any{"rows_read": float64(1000), "bytes_read": float64(20000), "elapsed": 0.01}}, nil
+		"statistics": map[string]any{"rows_read": float64(read), "bytes_read": float64(20000), "elapsed": 0.01}}, nil
 }
 
 // fakeLabels answers label statements from a map of address -> rows.

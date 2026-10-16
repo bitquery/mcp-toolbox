@@ -106,9 +106,14 @@ func (w window) cond() string {
 
 func (w window) open() bool { return w.After.IsZero() && w.Before.IsZero() }
 
+// stopSettings end a statement at its time limit with an error (never a
+// partial result, which would break the report's ledger) and cancel it on the
+// server when the client goes away.
+const stopSettings = "timeout_overflow_mode = 'throw', cancel_http_readonly_queries_on_client_close = 1"
+
 func settings(maxRows int64, maxResult int, maxSeconds int) string {
-	return fmt.Sprintf("SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_result_rows = %d, result_overflow_mode = 'throw', max_execution_time = %d",
-		maxRows, maxResult, maxSeconds)
+	return fmt.Sprintf("SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_result_rows = %d, result_overflow_mode = 'throw', max_execution_time = %d, %s",
+		maxRows, maxResult, maxSeconds, stopSettings)
 }
 
 // assetsStatement totals every asset of the address: in the window and over the
@@ -229,8 +234,8 @@ FROM directory.labels
 WHERE chain = '%s' AND address IN (%s)
 GROUP BY address, label_type, label_value, source
 ORDER BY address, label_type, label_value, source
-SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d`,
-		chain, strings.Join(quoted, ", "), maxRows, maxSeconds)
+SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d, %s`,
+		chain, strings.Join(quoted, ", "), maxRows, maxSeconds, stopSettings)
 }
 
 // The statements of the multi-hop search. Every address set is a literal
@@ -274,27 +279,6 @@ var (
 	sendsSide    = hopSide{Name: "sends", Table: tronSender, Self: "Transfer_Sender", Peer: "Transfer_Receiver"}
 )
 
-// degreeStatement counts every transfer (any asset, any status) of each
-// address on one table, reading the key column only. A hub over the row
-// budget makes it throw before or while reading, which the caller resolves by
-// splitting the set.
-func degreeStatement(side hopSide, addrs []string, maxRows int64, maxSeconds int) (string, error) {
-	list, err := quoteAddrs(addrs)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(`WITH %[1]s AS set_f
-SELECT %[2]s AS Address, Degree
-FROM (
-  SELECT %[3]s AS A, count() AS Degree
-  FROM %[4]s
-  PREWHERE %[3]s IN (SELECT arrayJoin(set_f))
-  GROUP BY A
-)
-%[5]s
-FORMAT JSON`, tronSet(list), tronB58("A"), side.Self, side.Table, settings(maxRows, len(addrs)+10, maxSeconds)), nil
-}
-
 // explainStatement asks for the primary-key granules one address occupies on
 // a table. The address is a single literal: no set, no subquery, so the
 // EXPLAIN reads nothing. It carries no row limit: the index analysis it runs
@@ -306,8 +290,8 @@ func explainStatement(side hopSide, addr string, maxSeconds int) (string, error)
 	}
 	return fmt.Sprintf(`EXPLAIN indexes = 1
 SELECT %[1]s FROM %[2]s WHERE %[1]s = %[3]s
-SETTINGS max_execution_time = %[4]d
-FORMAT JSON`, side.Self, side.Table, tronRaw(addr), maxSeconds), nil
+SETTINGS max_execution_time = %[4]d, %[5]s
+FORMAT JSON`, side.Self, side.Table, tronRaw(addr), maxSeconds, stopSettings), nil
 }
 
 // unbounded is the bound of an address whose whole history is read.

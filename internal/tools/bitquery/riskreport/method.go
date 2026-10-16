@@ -111,8 +111,8 @@ type Thresholds struct {
 	BranchMinUSD float64 `yaml:"branch_min_usd"`
 	MaxHops      int     `yaml:"max_hops"`
 	// GateRowsPerAddress is what one address costs to read at least, whatever
-	// its transfers (a granule in every partition it touches): the degree gate's
-	// and the history reads' row budgets are this plus hub_transfers per address.
+	// its transfers (a granule in every partition it touches): a history read's
+	// row budget is this plus hub_transfers per address.
 	GateRowsPerAddress int64 `yaml:"gate_rows_per_address"`
 }
 
@@ -137,7 +137,9 @@ var defaultThresholds = Thresholds{
 	HubTransfers:               10000,
 	BranchMinUSD:               1,
 	MaxHops:                    3,
-	GateRowsPerAddress:         1_000_000,
+	// Measured per address and table: 0.15M rows (62 addresses, 9.08M) to
+	// about 1.0M (one address read alone); 3M leaves room above both.
+	GateRowsPerAddress: 3_000_000,
 }
 
 // MethodConfig is the method block, inline in the tool's configuration.

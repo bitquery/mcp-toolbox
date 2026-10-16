@@ -14,7 +14,8 @@
 
 package riskreport
 
-// Running the search's statements: the degree gate and the history reads, each
+// Running the search's statements: the history reads and, when a read is
+// refused for its size, the EXPLAINs that find the hubs in it. Each goes
 // through executor.query, so each is budgeted, costed and has its own query_id.
 
 import (
@@ -23,7 +24,6 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,7 +50,7 @@ func classifyLimit(ctx context.Context, err error) limitKind {
 	if err == nil {
 		return notLimit
 	}
-	if errors.Is(err, errBudget) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+	if errors.Is(err, errBudget) || errors.Is(err, errNoTime) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 		return stopLimit
 	}
 	var db *util.BitqueryDatabaseError
@@ -71,160 +71,40 @@ func classifyLimit(ctx context.Context, err error) limitKind {
 	return notLimit
 }
 
-// degreeResult is the gate's answer for a set of addresses.
-type degreeResult struct {
-	in, out map[string]int64 // transfers per table
-	over    map[string]bool  // a hub found without counting it
-	// over without an estimate: its EXPLAIN gave no granule count, or the
-	// rest of its set overflowed again.
-	unknown map[string]bool
-}
-
-// degrees counts the transfers of each address on both tables. The row budget
-// of a statement is (rows an address costs at least + hub_transfers) per
-// address. A set that overflows it is resolved without reading: an EXPLAIN of
-// each address alone (a literal, no set) gives the primary-key granules it
-// occupies, about transfers / 8,192; the largest are hubs until the rest fits
-// the budget, and the rest is counted.
-func (e *executor) degrees(ctx context.Context, addrs []string) (degreeResult, error) {
-	res := degreeResult{in: map[string]int64{}, out: map[string]int64{}, over: map[string]bool{}, unknown: map[string]bool{}}
-	for _, side := range []hopSide{receiptsSide, sendsSide} {
-		into := res.in
-		if !side.In {
-			into = res.out
-		}
-		for i := 0; i < len(addrs); i += historyBatch {
-			if err := e.degreeSet(ctx, side, addrs[i:min(i+historyBatch, len(addrs))], into, res); err != nil {
-				return res, err
-			}
-		}
-	}
-	return res, nil
-}
-
-func (e *executor) degreeSet(ctx context.Context, side hopSide, addrs []string, into map[string]int64, res degreeResult) error {
-	var todo []string
-	for _, a := range addrs {
-		if !res.over[a] {
-			todo = append(todo, a)
-		}
-	}
-	if len(todo) == 0 {
-		return nil
-	}
-	rows, overflow, err := e.countSet(ctx, side, todo)
-	if err != nil {
-		return err
-	}
-	if overflow {
-		if todo, err = e.resolveOverflow(ctx, side, todo, res); err != nil || len(todo) == 0 {
-			return err
-		}
-		if rows, overflow, err = e.countSet(ctx, side, todo); err != nil {
-			return err
-		}
-		if overflow {
-			// The estimates did not hold: nothing left is counted.
-			for _, a := range todo {
-				res.over[a] = true
-				res.unknown[a] = true
-			}
-			return nil
-		}
-	}
-	asked := map[string]bool{}
-	for _, a := range todo {
-		asked[a] = true
-	}
-	for _, r := range rows {
-		a := asStr(r["Address"])
-		if !asked[a] {
-			return fmt.Errorf("the degree statement returned an address it was not asked for")
-		}
-		into[a] += asInt(r["Degree"])
-	}
-	return nil
-}
-
-// countSet runs the key-only count of a set. overflow is true when the set
-// holds more than its own row budget (not the report's).
-func (e *executor) countSet(ctx context.Context, side hopSide, todo []string) ([]map[string]any, bool, error) {
-	left, err := e.maxRows()
-	if err != nil {
-		return nil, false, err
-	}
-	budget := e.perAddress() * int64(len(todo))
-	stmt, err := degreeStatement(side, todo, min(left, budget), e.th.StatementMaxSeconds)
-	if err != nil {
-		return nil, false, err
-	}
-	rows, err := e.query(ctx, "degree_"+side.Name, side.Table, stmt)
-	if err != nil {
-		if classifyLimit(ctx, err) != rowsLimit || budget > left {
-			return nil, false, err
-		}
-		e.cost.Detail = append(e.cost.Detail, statementCost{Name: "degree_" + side.Name + " (over its row budget)"})
-		e.cost.Statements++
-		return nil, true, nil
-	}
-	return rows, false, nil
-}
-
-// perAddress is a gate or history statement's row budget per address.
+// perAddress is a history statement's row budget per address: what one
+// address costs to read at least, plus hub_transfers.
 func (e *executor) perAddress() int64 {
 	return e.th.GateRowsPerAddress + int64(e.th.HubTransfers)
 }
 
+// resultSlack is added to a history statement's result cap.
+const resultSlack = 100
+
+// readSet reads one table's history of a set of addresses. Its row budget is
+// perAddress per address and its result cap hub_transfers per address, so a
+// set holding a hub is refused (before reading, for the row budget); overflow
+// reports that refusal, which the caller resolves with EXPLAINs.
+func (e *executor) readSet(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset) ([]histRow, bool, error) {
+	left, err := e.maxRows()
+	if err != nil {
+		return nil, false, err
+	}
+	budget := e.perAddress() * int64(len(addrs))
+	maxResult := e.th.HubTransfers*len(addrs) + resultSlack
+	rows, err := e.history(ctx, side, addrs, bounds, asset, min(left, budget), maxResult)
+	if err != nil {
+		// A refusal for size within the set's own budget is the set's; within
+		// the report's remaining budget it is the report's.
+		if classifyLimit(ctx, err) == rowsLimit && budget <= left {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	return rows, false, nil
+}
+
 // granuleRows is the rows of one primary-key granule.
 const granuleRows = 8192
-
-// resolveOverflow finds the hubs of a set that overflowed its count: it
-// estimates each address's transfers on the table from an EXPLAIN of that
-// address alone, marks the largest as hubs until the rest fits the set's
-// budget, and returns the rest. An address whose EXPLAIN gives no granule count
-// is a hub without an estimate.
-func (e *executor) resolveOverflow(ctx context.Context, side hopSide, todo []string, res degreeResult) ([]string, error) {
-	type est struct {
-		addr string
-		rows int64
-	}
-	var ests []est
-	for _, a := range todo {
-		g, ok, err := e.granules(ctx, side, a)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			res.over[a] = true
-			res.unknown[a] = true
-			continue
-		}
-		ests = append(ests, est{a, g * granuleRows})
-	}
-	sort.Slice(ests, func(i, j int) bool {
-		if ests[i].rows != ests[j].rows {
-			return ests[i].rows > ests[j].rows
-		}
-		return ests[i].addr < ests[j].addr
-	})
-	sum := int64(0)
-	for _, x := range ests {
-		sum += x.rows
-	}
-	// While the rest does not fit, its largest address is over the budget of
-	// one address, so over hub_transfers: a hub.
-	for len(ests) > 0 && sum > e.perAddress()*int64(len(ests)) && ests[0].rows > int64(e.th.HubTransfers) {
-		res.over[ests[0].addr] = true
-		sum -= ests[0].rows
-		ests = ests[1:]
-	}
-	rest := make([]string, len(ests))
-	for i, x := range ests {
-		rest[i] = x.addr
-	}
-	sort.Strings(rest)
-	return rest, nil
-}
 
 // granules reads the primary-key granules one address occupies on a table
 // from EXPLAIN indexes = 1, which reads no data. ok is false when the text has
@@ -233,7 +113,7 @@ func (e *executor) granules(ctx context.Context, side hopSide, addr string) (int
 	if _, err := e.maxRows(); err != nil {
 		return 0, false, err
 	}
-	stmt, err := explainStatement(side, addr, e.th.StatementMaxSeconds)
+	stmt, err := explainStatement(side, addr, e.secs(ctx))
 	if err != nil {
 		return 0, false, err
 	}
@@ -286,14 +166,9 @@ type histRow struct {
 }
 
 // history reads the report asset's transfers of the addresses on one table,
-// each up to its bound. maxResult is the statement's result cap.
-func (e *executor) history(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset, maxResult int) ([]histRow, error) {
-	left, err := e.maxRows()
-	if err != nil {
-		return nil, err
-	}
-	per := e.th.GateRowsPerAddress + int64(e.th.HubTransfers)
-	stmt, err := historyStatement(side, addrs, bounds, asset, min(left, per*int64(len(addrs))), maxResult, e.th.StatementMaxSeconds)
+// each up to its bound.
+func (e *executor) history(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset, maxRows int64, maxResult int) ([]histRow, error) {
+	stmt, err := historyStatement(side, addrs, bounds, asset, maxRows, maxResult, e.secs(ctx))
 	if err != nil {
 		return nil, err
 	}

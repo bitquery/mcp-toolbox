@@ -16,6 +16,7 @@ package riskreport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -376,9 +377,13 @@ func TestAT2MultiHop(t *testing.T) {
 	if !foundMaxHops {
 		t.Errorf("no unnamed max_hops row at hop 2: %v", out["unnamed_connections"])
 	}
-	// assets, counterparties, labels, degree x2, history x2, labels of hop 2.
-	if got := out["cost"].(map[string]any)["statements"].(float64); got != 8 {
-		t.Errorf("statements = %v, want 8", got)
+	// assets, counterparties, labels, history x2 (one per table, no count, no
+	// EXPLAIN: the level holds no hub), labels of hop 2.
+	if got := out["cost"].(map[string]any)["statements"].(float64); got != 6 {
+		t.Errorf("statements = %v, want 6", got)
+	}
+	if countWith(chain.statements, "EXPLAIN") != 0 || countContaining(chain.statements, "AS Peer") != 2 {
+		t.Errorf("a level without a hub must read each table once")
 	}
 	checkStatements(t, chain.statements)
 	// The history of TUrdave is read up to its last transfer to the test wallet.
@@ -401,6 +406,9 @@ var subqueryRe = regexp.MustCompile(`IN \(SELECT [^)]*FROM`)
 func checkStatements(t *testing.T, stmts []string) {
 	t.Helper()
 	for _, s := range stmts {
+		if !strings.Contains(s, "timeout_overflow_mode = 'throw'") || !strings.Contains(s, "cancel_http_readonly_queries_on_client_close = 1") {
+			t.Errorf("statement the server would not stop with the report:\n%s", s)
+		}
 		if strings.HasPrefix(s, "EXPLAIN") {
 			// An EXPLAIN names one address as a literal: no set, no subquery,
 			// and no row limit (the index analysis would apply it).
@@ -460,10 +468,14 @@ func newGraph(t *testing.T) graph {
 			tr(g.n, g.a, "250", 24), tr(g.d, g.a, "0.5", 25), tr(g.a, g.target, "1000", 26),
 			tr(g.q, g.r, "100", 30), tr(g.target, g.r, "500", 31), tr(g.r, g.x, "300", 32), tr(g.r, tronZero, "50", 33),
 		},
-		degree:   map[string]int{g.h2: 6000},
-		overflow: map[string]bool{g.h: true},
-		// H's primary key: ~114M transfers, the size of an exchange hot wallet.
+		// H: ~114M transfers, the size of an exchange hot wallet; a read of it
+		// is refused, and its primary key shows it.
+		readCost: map[string]int64{g.h: 114_000_000},
 		granules: map[string]int{g.h: 14000},
+	}
+	// H2 has more transfers of the asset than hub_transfers: its read shows it.
+	for i := 0; i < 10001; i++ {
+		g.chain.transfers = append(g.chain.transfers, tr(g.h2, synth(t, "Sink", 1), "0.01", 1))
 	}
 	g.chain.assets = []map[string]any{usdtAssetRow("1000000000", "600000000", 1, 2)}
 	in := edgeRow("in", g.a, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, txOf(26))
@@ -585,13 +597,14 @@ func TestMultiHopCuts(t *testing.T) {
 			t.Errorf("unnamed row %q missing: %v", want, out["unnamed_connections"])
 		}
 	}
-	// The hub over its row budget was found by an EXPLAIN of each address of
-	// the batch that overflowed (H, H2, N on the receipts table), then the rest
-	// was counted; its history was never read.
+	// The hub was found by an EXPLAIN of each address of the read that was
+	// refused for it (H, H2, N on the receipts table), then the rest was read;
+	// the only statement naming H's history is the refused one.
 	explained := map[string]bool{}
+	hubReads := 0
 	for _, s := range g.chain.statements {
 		if strings.Contains(s, "AS Peer") && mentioned(s, g.h) {
-			t.Errorf("a hub's history was read")
+			hubReads++
 		}
 		if strings.HasPrefix(s, "EXPLAIN") {
 			for _, a := range []string{g.h, g.h2, g.n} {
@@ -600,9 +613,34 @@ func TestMultiHopCuts(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(s, "AS Degree") && mentioned(s, g.h) && !mentioned(s, g.n) {
-			t.Errorf("the hub was counted on its own:\n%s", s)
+	}
+	// Level 2: history refused for H, the three EXPLAINs, history of the rest.
+	var kinds []string
+	for _, d := range out["cost"].(map[string]any)["detail"].([]any) {
+		kinds = append(kinds, d.(map[string]any)["name"].(string))
+	}
+	want := []string{"history_receipts (failed)", "explain_receipts", "explain_receipts", "explain_receipts", "history_receipts", "history_sends"}
+	if i := slices.Index(kinds, want[0]); i < 0 || !slices.Equal(kinds[i:i+len(want)], want) {
+		t.Errorf("statements %v, want the sequence %v", kinds, want)
+	}
+	if countContaining(g.chain.statements, "AS Degree") != 0 {
+		t.Errorf("a separate count ran")
+	}
+	notes := map[string]string{}
+	for _, u := range out["unnamed_connections"].([]any) {
+		um := u.(map[string]any)
+		if n, ok := um["note"].(string); ok {
+			notes[um["address"].(string)] = n
 		}
+	}
+	if notes[g.h] != "EXPLAIN on tron_api.transfers_receiver: 14000 primary-key granules, about 114688000 transfers" {
+		t.Errorf("H's note: %q", notes[g.h])
+	}
+	if !strings.HasPrefix(notes[g.h2], "10002 transfers of the report asset read") {
+		t.Errorf("H2's note: %q", notes[g.h2])
+	}
+	if hubReads != 1 {
+		t.Errorf("statements naming the hub's history = %d, want the one refused", hubReads)
 	}
 	if len(explained) != 3 {
 		t.Errorf("explained %v, want H, H2 and N", explained)
@@ -627,7 +665,7 @@ func TestMultiHopCuts(t *testing.T) {
 // branches it could not follow as cut budget and complete false.
 func TestMultiHopBudget(t *testing.T) {
 	g := newGraph(t)
-	tool := newTestToolWith(t, g.chain, g.labels, func(mc *MethodConfig) { mc.Thresholds.ReportRowsBudget = 4500 })
+	tool := newTestToolWith(t, g.chain, g.labels, func(mc *MethodConfig) { mc.Thresholds.ReportRowsBudget = 2500 })
 	res, err := tool.Invoke(context.Background(), g.chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": g.target,
 		"view": "all", "max_hops": 3, "min_amount_usd": 10.0}), "")
 	if err != nil {
@@ -737,6 +775,154 @@ func TestMintIsAttributedToIssuance(t *testing.T) {
 	}
 }
 
+func countContaining(stmts []string, sub string) int {
+	n := 0
+	for _, s := range stmts {
+		if strings.Contains(s, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// A statement's time limit is the report's: with 7.5 s left it carries at
+// most 7, and it carries the settings that stop it with the report.
+func TestStatementTimeFollowsDeadline(t *testing.T) {
+	chain := &fakeChain{assets: []map[string]any{usdtAssetRow("1", "0", 1, 0)}}
+	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 7500*time.Millisecond)
+	defer cancel()
+	if _, err := ex.assets(ctx, plainSender, window{}); err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`max_execution_time = ([0-9]+)`).FindStringSubmatch(chain.statements[0])
+	if m == nil {
+		t.Fatalf("no max_execution_time:\n%s", chain.statements[0])
+	}
+	if n, _ := strconv.Atoi(m[1]); n > 7 || n < 1 {
+		t.Errorf("max_execution_time = %d with 7.5 s left", n)
+	}
+	checkStatements(t, nil)
+	if !strings.Contains(chain.statements[0], "cancel_http_readonly_queries_on_client_close = 1") {
+		t.Errorf("no cancel setting")
+	}
+}
+
+// No statement starts when the time left is under max(5 s, the last of its
+// kind): a level whose previous read took 30 s is not started with 20 s left.
+func TestNoStatementWithoutTime(t *testing.T) {
+	chain := &fakeChain{}
+	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	asset := tronAsset{Key: usdtContract, Contract: usdtContract, Decimals: 6}
+	read := func(left time.Duration) error {
+		ctx, cancel := context.WithTimeout(context.Background(), left)
+		defer cancel()
+		_, _, err := ex.readSet(ctx, receiptsSide, []string{plainSender}, []uint32{unbounded}, asset)
+		return err
+	}
+	ex.took("history_receipts", 30*time.Second)
+	if err := read(20 * time.Second); !errors.Is(err, errNoTime) || classifyLimit(context.Background(), err) != stopLimit {
+		t.Errorf("err = %v, want errNoTime", err)
+	}
+	ex.took("history_receipts", time.Second)
+	if err := read(4 * time.Second); !errors.Is(err, errNoTime) {
+		t.Errorf("4 s left: err = %v, want errNoTime", err)
+	}
+	if len(chain.statements) != 0 {
+		t.Errorf("a statement was sent without time for it")
+	}
+	if err := read(20 * time.Second); err != nil {
+		t.Errorf("20 s left after a 1 s read: %v", err)
+	}
+	if len(chain.statements) != 1 {
+		t.Errorf("statements = %d, want 1", len(chain.statements))
+	}
+}
+
+// The live run on TU9SQJ… (all3): its received counterparty is a hub, its sent
+// one, THwGLt…, an ordinary wallet that costs about 1.5M rows to read. The
+// first build counted both (2.0M rows under a 2.02M budget), then read THwGLt…
+// alone under 1.01M: refused before it started, which the search took for the
+// report's budget and cut the sent side as budget. Now the two are read
+// together under the per-address budget, the hub shows itself by its rows, and
+// THwGLt…'s branch is followed.
+func TestLiveSentSideNotCutAsBudget(t *testing.T) {
+	target := "TU9SQJFv8imPtuuFesyAdwM1GVJTjBwFmn"
+	hub := "TExZLkqhytVwJ3Dbcsp16u91f2oFTD1VEQ"
+	sender := "THwGLtbt3khcz63tzBdNRMNFxhB57vkjRP"
+	exch := synth(t, "Exch", 3)
+	at := func(min int) string {
+		return time.Date(2026, 4, 10, 7, min, 0, 0, time.UTC).Format(time.DateTime)
+	}
+	chain := &fakeChain{readCost: map[string]int64{hub: 500_000, sender: 1_500_000}}
+	add := func(from, to, raw, when, tx string) {
+		chain.transfers = append(chain.transfers, fakeTransfer{from: from, to: to, raw: raw, block: 1, time: when, tx: tx})
+	}
+	for i := 0; i < 10001; i++ {
+		add(synth(t, "Payer", i), hub, "1000000", at(1), fmt.Sprintf("%064x", i+1000))
+	}
+	add(hub, target, "2600000000", at(10), txOf(10))
+	add(target, sender, "2600000000", at(16), txOf(16))
+	add(sender, exch, "2600000000", at(20), txOf(20))
+	chain.assets = []map[string]any{usdtAssetRow("2600000000", "2600000000", 1, 1)}
+	in := edgeRow("in", hub, "2600000000", "2600000000", "2600000000", 1, [4]string{"1", "1", "2600000000", "2600000000"}, txOf(10))
+	in["Last"] = at(10)
+	chain.edges = []map[string]any{in,
+		edgeRow("out", sender, "2600000000", "2600000000", "2600000000", 1, [4]string{"1", "1", "2600000000", "2600000000"}, txOf(16))}
+	labels := &fakeLabels{rows: map[string][]map[string]any{
+		exch: {{"label_type": "cex-deposit-address", "label_value": "okx-deposit", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+	}}
+	tool := newTestTool(t, chain, labels)
+	res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": target,
+		"view": "all", "max_hops": 3}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := decode(t, res)
+	by := out["unattributed_by_cut"].(map[string]any)
+	if b := by["sent"].(map[string]any)["budget"]; b != "0.000000" {
+		t.Errorf("sent budget = %v, want 0", b)
+	}
+	if h := by["received"].(map[string]any)["hub"]; h != "2600.000000" {
+		t.Errorf("received hub = %v", h)
+	}
+	var okx map[string]any
+	for _, c := range out["connections"].([]any) {
+		if cm := c.(map[string]any); cm["entity"] == "okx" {
+			okx = cm
+		}
+	}
+	if okx == nil || okx["sent"] != "2600.000000" || okx["sent_shortest_hops"] != float64(2) {
+		t.Errorf("the sent side was not followed: %v", out["connections"])
+	}
+	if out["params"].(map[string]any)["complete"] != true {
+		t.Errorf("complete = %v", out["params"].(map[string]any)["complete"])
+	}
+	// The two hop-1 addresses are read together, once per table, within the
+	// per-address budget; no statement was refused.
+	for _, d := range out["cost"].(map[string]any)["detail"].([]any) {
+		if name := d.(map[string]any)["name"].(string); strings.Contains(name, "failed") {
+			t.Errorf("a refused statement: %s", name)
+		}
+	}
+	checkStatements(t, chain.statements)
+}
+
+// A statement refused for any reason is listed in the cost, so a report that
+// stopped says which statement stopped it.
+func TestRefusedStatementIsListed(t *testing.T) {
+	chain := &fakeChain{readCost: map[string]int64{plainSender: 10_000_000}}
+	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	asset := tronAsset{Key: usdtContract, Contract: usdtContract, Decimals: 6}
+	_, over, err := ex.readSet(context.Background(), receiptsSide, []string{plainSender}, []uint32{unbounded}, asset)
+	if err != nil || !over {
+		t.Fatalf("over = %v, err = %v; want a refusal for size", over, err)
+	}
+	if ex.cost.Statements != 1 || len(ex.cost.Detail) != 1 || ex.cost.Detail[0].Name != "history_receipts (failed)" {
+		t.Errorf("cost: %+v", ex.cost)
+	}
+}
+
 func countWith(stmts []string, prefix string) int {
 	n := 0
 	for _, s := range stmts {
@@ -768,8 +954,8 @@ func TestMultiHopHubWithoutEstimate(t *testing.T) {
 				t.Errorf("H's row: %v", um)
 			}
 		}
-		if um["address"] == g.h2 && um["note"] != nil {
-			t.Errorf("a hub by its count carries the no-estimate note: %v", um)
+		if um["address"] == g.h2 && !strings.Contains(fmt.Sprint(um["note"]), "read, over hub_transfers") {
+			t.Errorf("a hub by its count: %v", um)
 		}
 	}
 	if !found {

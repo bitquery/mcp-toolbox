@@ -24,12 +24,15 @@ package riskreport
 //     amount;
 //  2. an unlabelled branch whose amount is below branch_min_usd ends: cut small;
 //  3. at the last hop the rest ends: cut max_hops;
-//  4. the degree gate (key-only counts, both tables): over hub_transfers the
-//     address is a hub and its branch ends: cut hub;
-//  5. the history of the rest, one statement per table for the whole frontier,
+//  4. the history of the rest, one statement per table for the whole frontier,
 //     a received-side address read up to the latest transfer that links it to
-//     the path, a sent-side address over its whole history;
-//  6. the balance-aware attribution (attrib.go) splits each branch's amount over
+//     the path, a sent-side address over its whole history. A statement's row
+//     budget and result cap are per address, so a set holding a hub is refused;
+//     then an EXPLAIN of each address alone (reading nothing) estimates its
+//     size, the largest are hubs until the rest fits, and the rest is read. An
+//     address whose rows alone exceed hub_transfers is a hub too. A hub's
+//     branch ends: cut hub;
+//  5. the balance-aware attribution (attrib.go) splits each branch's amount over
 //     the address's sources (received side) or destinations (sent side): those
 //     are the next frontier.
 //
@@ -68,8 +71,15 @@ var cutNotes = map[string]string{
 	"unspent":            "still held by an unlabelled address",
 }
 
-// hubWithoutEstimate is the note of a hub whose size could not be estimated.
-const hubWithoutEstimate = "no granule estimate from EXPLAIN: treated as a hub without a count"
+// The notes of hubs that were not measured.
+const (
+	hubWithoutEstimate = "no granule estimate from EXPLAIN: treated as a hub without a count"
+	hubStillOver       = "still over the read budget after the largest estimates were removed: treated as a hub without a count"
+)
+
+// readRetries is how many times a set refused for its size is read again,
+// each time without its largest remaining estimate.
+const readRetries = 2
 
 // searchEntry is one branch: an amount that reached an address at a depth.
 type searchEntry struct {
@@ -160,9 +170,10 @@ type search struct {
 	cutAddrs map[direction]map[string]map[string]bool
 	unnamed  map[string]*unnamedOut
 
-	degIn, degOut map[string]int64
 	hub           map[string]bool
 	hubNote       map[string]string
+	hubUnmeasured map[string]bool
+	granules      map[string]int64 // EXPLAIN estimates, by table and address
 	events        map[string][]histEvent
 	readTo        map[string]uint32
 	flowMemo      map[string]*flows
@@ -176,8 +187,9 @@ type search struct {
 func newSearch() *search {
 	s := &search{
 		cuts: map[direction]map[string]*big.Int{}, cutAddrs: map[direction]map[string]map[string]bool{},
-		unnamed: map[string]*unnamedOut{}, degIn: map[string]int64{}, degOut: map[string]int64{}, hub: map[string]bool{}, hubNote: map[string]string{},
-		events: map[string][]histEvent{}, readTo: map[string]uint32{}, flowMemo: map[string]*flows{}, caps: map[string]*capState{},
+		unnamed: map[string]*unnamedOut{}, hub: map[string]bool{}, hubNote: map[string]string{}, hubUnmeasured: map[string]bool{},
+		granules: map[string]int64{},
+		events:   map[string][]histEvent{}, readTo: map[string]uint32{}, flowMemo: map[string]*flows{}, caps: map[string]*capState{},
 		incomplete: map[string]bool{}, maxReached: 1,
 	}
 	for _, d := range []direction{received, sent} {
@@ -350,52 +362,17 @@ func (s *search) level(ctx context.Context, depth int, frontier []*searchEntry) 
 		s.cutAll(open, "max_hops")
 		return nil, nil
 	}
-	// 4. The degree gate.
-	var need []string
-	for _, n := range distinctNodes(open) {
-		_, in := s.degIn[n]
-		_, out := s.degOut[n]
-		if !s.hub[n] && !(in && out) {
-			need = append(need, n)
-		}
+	// 4. The histories; the hubs they hold are found on the way.
+	if err := s.read(ctx, open); err != nil {
+		return nil, err
 	}
-	if len(need) > 0 {
-		res, err := s.ex.degrees(ctx, need)
-		if err != nil {
-			if classifyLimit(ctx, err) == notLimit {
-				return nil, err
-			}
-			s.stopped = true
-			s.cutAll(open, "budget")
-			return nil, nil
-		}
-		for _, n := range need {
-			s.degIn[n] = res.in[n]
-			s.degOut[n] = res.out[n]
-			if res.over[n] {
-				s.hub[n] = true
-			}
-			if res.unknown[n] {
-				s.hubNote[n] = hubWithoutEstimate
-			}
-		}
-	}
-	var keep []*searchEntry
+	// 5. Attribution: the next frontier.
+	var next []*searchEntry
 	for _, e := range open {
-		if s.hub[e.node] || s.degIn[e.node]+s.degOut[e.node] > int64(s.ex.th.HubTransfers) {
-			s.hub[e.node] = true
+		if s.hub[e.node] {
 			s.cut(e, "hub", e.node, e.amount, true)
 			continue
 		}
-		keep = append(keep, e)
-	}
-	// 5. The histories.
-	if err := s.read(ctx, keep); err != nil {
-		return nil, err
-	}
-	// 6. Attribution: the next frontier.
-	var next []*searchEntry
-	for _, e := range keep {
 		if !s.hasHistory(e) {
 			s.cut(e, "budget", e.node, e.amount, true)
 			continue
@@ -429,13 +406,16 @@ func (s *search) hasHistory(e *searchEntry) bool {
 	return ok && r >= s.boundOf(e)
 }
 
-// read loads the histories the entries need that are not loaded yet. A
-// statement stopped by a limit stops the search; the addresses it was for stay
-// unread (their branches become cut budget).
+// read loads the histories the entries need that are not loaded yet, and
+// marks the hubs among their addresses. A statement stopped by the deadline or
+// the report's budget stops the search; the addresses it was for stay unread
+// (their branches become cut budget).
 func (s *search) read(ctx context.Context, entries []*searchEntry) error {
 	need := map[string]uint32{}
 	for _, e := range entries {
-		need[e.node] = max(need[e.node], s.boundOf(e))
+		if !s.hub[e.node] {
+			need[e.node] = max(need[e.node], s.boundOf(e))
+		}
 	}
 	var todo []string
 	for n, b := range need {
@@ -445,56 +425,155 @@ func (s *search) read(ctx context.Context, entries []*searchEntry) error {
 	}
 	sort.Strings(todo)
 	for i := 0; i < len(todo) && !s.stopped; i += historyBatch {
-		chunk := todo[i:min(i+historyBatch, len(todo))]
-		bounds := make([]uint32, len(chunk))
-		var nIn, nOut int64
-		for j, n := range chunk {
-			bounds[j] = need[n]
-			nIn += s.degIn[n]
-			nOut += s.degOut[n]
+		if err := s.readChunk(ctx, slices.Clone(todo[i:min(i+historyBatch, len(todo))]), need); err != nil {
+			return err
 		}
-		var rows []histRow
-		ok := true
-		for _, side := range []hopSide{receiptsSide, sendsSide} {
-			capRows := nIn
-			if !side.In {
-				capRows = nOut
+	}
+	return nil
+}
+
+// readChunk reads both tables for a set of addresses.
+func (s *search) readChunk(ctx context.Context, chunk []string, need map[string]uint32) error {
+	var rows []histRow
+	for _, side := range []hopSide{receiptsSide, sendsSide} {
+		got, rest, err := s.readSide(ctx, side, chunk, need)
+		if err != nil {
+			if classifyLimit(ctx, err) == notLimit {
+				return err
 			}
-			got, err := s.ex.history(ctx, side, chunk, bounds, s.asset, int(capRows)+10)
-			if err != nil {
-				if classifyLimit(ctx, err) == notLimit {
-					return err
-				}
-				s.stopped = true
-				ok = false
-				break
-			}
-			rows = append(rows, got...)
+			s.stopped = true
+			return nil
 		}
-		if !ok {
-			break
+		rows = append(rows, got...)
+		chunk = rest
+		if len(chunk) == 0 {
+			return nil
 		}
-		byNode := map[string][]histEvent{}
-		for _, r := range rows {
-			// A transfer to itself changes neither the balance nor its mix.
-			if r.ev.Peer == r.addr {
-				continue
-			}
-			byNode[r.addr] = append(byNode[r.addr], r.ev)
+	}
+	keep := map[string]bool{}
+	for _, n := range chunk {
+		keep[n] = true
+	}
+	byNode := map[string][]histEvent{}
+	for _, r := range rows {
+		// A transfer to itself changes neither the balance nor its mix; the
+		// rows of an address found to be a hub on the other table are dropped.
+		if r.ev.Peer == r.addr || !keep[r.addr] {
+			continue
 		}
-		for j, n := range chunk {
-			ev := byNode[n]
-			sortEvents(ev)
-			s.events[n] = ev
-			s.readTo[n] = bounds[j]
-			for k := range s.flowMemo {
-				if strings.HasPrefix(k, n+"\x00") {
-					delete(s.flowMemo, k)
-				}
+		byNode[r.addr] = append(byNode[r.addr], r.ev)
+	}
+	for _, n := range chunk {
+		ev := byNode[n]
+		if len(ev) > s.ex.th.HubTransfers {
+			s.markHub(n, fmt.Sprintf("%d transfers of the report asset read, over hub_transfers", len(ev)), false)
+			continue
+		}
+		sortEvents(ev)
+		s.events[n] = ev
+		s.readTo[n] = need[n]
+		for k := range s.flowMemo {
+			if strings.HasPrefix(k, n+"\x00") {
+				delete(s.flowMemo, k)
 			}
 		}
 	}
 	return nil
+}
+
+func (s *search) markHub(addr, note string, unmeasured bool) {
+	s.hub[addr] = true
+	s.hubNote[addr] = note
+	if unmeasured {
+		s.hubUnmeasured[addr] = true
+	}
+}
+
+func boundsFor(addrs []string, need map[string]uint32) []uint32 {
+	b := make([]uint32, len(addrs))
+	for i, a := range addrs {
+		b[i] = need[a]
+	}
+	return b
+}
+
+// readSide reads one table for a set of addresses. A read refused for its size
+// is resolved by EXPLAINs: the hubs they find are marked, the rest is read
+// again, and while it is still refused its largest estimate is a hub too. It
+// returns the rows and the addresses read.
+func (s *search) readSide(ctx context.Context, side hopSide, chunk []string, need map[string]uint32) ([]histRow, []string, error) {
+	rows, over, err := s.ex.readSet(ctx, side, chunk, boundsFor(chunk, need), s.asset)
+	if err != nil || !over {
+		return rows, chunk, err
+	}
+	rest, err := s.hubsByExplain(ctx, side, chunk)
+	if err != nil {
+		return nil, nil, err
+	}
+	for attempt := 0; len(rest) > 0; attempt++ {
+		rows, over, err = s.ex.readSet(ctx, side, rest, boundsFor(rest, need), s.asset)
+		if err != nil || !over {
+			return rows, rest, err
+		}
+		if attempt == readRetries {
+			for _, a := range rest {
+				s.markHub(a, hubStillOver, true)
+			}
+			return nil, nil, nil
+		}
+		s.markHub(rest[0], s.granuleNote(side, rest[0]), false)
+		rest = rest[1:]
+	}
+	return nil, nil, nil
+}
+
+func (s *search) granuleNote(side hopSide, addr string) string {
+	g := s.granules[side.Table+"\x00"+addr]
+	return fmt.Sprintf("EXPLAIN on %s: %d primary-key granules, about %d transfers", side.Table, g, g*granuleRows)
+}
+
+// hubsByExplain estimates each address of a refused set from an EXPLAIN of it
+// alone, marks the largest as hubs until the rest fits the set's row budget,
+// and returns the rest, largest estimate first. An address whose EXPLAIN gives
+// no granule count is a hub that was not measured.
+func (s *search) hubsByExplain(ctx context.Context, side hopSide, chunk []string) ([]string, error) {
+	type est struct {
+		addr string
+		rows int64
+	}
+	var ests []est
+	for _, a := range chunk {
+		g, ok, err := s.ex.granules(ctx, side, a)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			s.markHub(a, hubWithoutEstimate, true)
+			continue
+		}
+		s.granules[side.Table+"\x00"+a] = g
+		ests = append(ests, est{a, g * granuleRows})
+	}
+	sort.Slice(ests, func(i, j int) bool {
+		if ests[i].rows != ests[j].rows {
+			return ests[i].rows > ests[j].rows
+		}
+		return ests[i].addr < ests[j].addr
+	})
+	sum := int64(0)
+	for _, x := range ests {
+		sum += x.rows
+	}
+	for len(ests) > 0 && sum > s.ex.perAddress()*int64(len(ests)) && ests[0].rows > int64(s.ex.th.HubTransfers) {
+		s.markHub(ests[0].addr, s.granuleNote(side, ests[0].addr), false)
+		sum -= ests[0].rows
+		ests = ests[1:]
+	}
+	rest := make([]string, len(ests))
+	for i, x := range ests {
+		rest[i] = x.addr
+	}
+	return rest, nil
 }
 
 // keyOf names an event's peer: the zero address is a mint or a burn, and a
