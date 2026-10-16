@@ -46,7 +46,7 @@ parameters:
   - name: max_hops
     type: integer
     description: Depth of the search (view all).
-    default: 3
+    default: 2
   - name: weights
     type: map
     description: Partial override of the risk profile.

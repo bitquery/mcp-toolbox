@@ -133,10 +133,10 @@ var defaultThresholds = Thresholds{
 	StatementMaxRows:           200_000_000,
 	StatementMaxSeconds:        60,
 	ReportRowsBudget:           500_000_000,
-	DeadlineSeconds:            60,
+	DeadlineSeconds:            50,
 	HubTransfers:               10000,
 	BranchMinUSD:               1,
-	MaxHops:                    3,
+	MaxHops:                    2,
 	// Measured per address and table: 0.15M rows (62 addresses, 9.08M) to
 	// about 1.0M (one address read alone); 3M leaves room above both.
 	GateRowsPerAddress: 3_000_000,
