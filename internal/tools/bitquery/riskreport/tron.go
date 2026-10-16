@@ -232,3 +232,119 @@ ORDER BY address, label_type, label_value, source
 SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d`,
 		chain, strings.Join(quoted, ", "), maxRows, maxSeconds)
 }
+
+// The statements of the multi-hop search. Every address set is a literal
+// array of validated addresses in the shape the tron_flows_between tool uses:
+// checksum-checked, cast to the column's FixedString(20) (a String set silently
+// loses every value ending in 00) and read through IN (SELECT arrayJoin(set)).
+// A subquery that reads a transfer table into a set is a full scan there, so
+// none is ever written.
+
+// quoteAddrs validates and quotes a list of base58 addresses.
+func quoteAddrs(addrs []string) (string, error) {
+	if len(addrs) == 0 {
+		return "", fmt.Errorf("an empty address set")
+	}
+	q := make([]string, len(addrs))
+	for i, a := range addrs {
+		if !tronAddressRe.MatchString(a) {
+			return "", fmt.Errorf("an address in a statement is not a Tron address")
+		}
+		q[i] = "'" + a + "'"
+	}
+	return "[" + strings.Join(q, ", ") + "]", nil
+}
+
+// tronSet is the literal set expression (a scalar of Array(FixedString(20))).
+func tronSet(list string) string {
+	return "(SELECT arrayDistinct(arrayMap(x -> toFixedString(x, 20), arrayFilter(x -> length(x) = 20, arrayMap(x -> if(length(tryBase58Decode(x)) = 25 AND substring(tryBase58Decode(x), 22, 4) = substring(SHA256(SHA256(substring(tryBase58Decode(x), 1, 21))), 1, 4), substring(tryBase58Decode(x), 2, 20), ''), " + list + ")))))"
+}
+
+// hopSide is one transfer table, seen from the addresses of the set.
+type hopSide struct {
+	Name  string // statement name in the cost detail
+	Table string
+	Self  string // the set's column
+	Peer  string
+	In    bool // the set's addresses receive
+}
+
+var (
+	receiptsSide = hopSide{Name: "receipts", Table: tronReceiver, Self: "Transfer_Receiver", Peer: "Transfer_Sender", In: true}
+	sendsSide    = hopSide{Name: "sends", Table: tronSender, Self: "Transfer_Sender", Peer: "Transfer_Receiver"}
+)
+
+// degreeStatement counts every transfer (any asset, any status) of each
+// address on one table, reading the key column only. A hub over the row
+// budget makes it throw before or while reading, which the caller resolves by
+// splitting the set.
+func degreeStatement(side hopSide, addrs []string, maxRows int64, maxSeconds int) (string, error) {
+	list, err := quoteAddrs(addrs)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`WITH %[1]s AS set_f
+SELECT %[2]s AS Address, Degree
+FROM (
+  SELECT %[3]s AS A, count() AS Degree
+  FROM %[4]s
+  PREWHERE %[3]s IN (SELECT arrayJoin(set_f))
+  GROUP BY A
+)
+%[5]s
+FORMAT JSON`, tronSet(list), tronB58("A"), side.Self, side.Table, settings(maxRows, len(addrs)+10, maxSeconds)), nil
+}
+
+// explainStatement asks for the primary-key granules one address occupies on
+// a table. The address is a single literal: no set, no subquery, so the
+// EXPLAIN reads nothing. It carries no row limit: the index analysis it runs
+// checks max_rows_to_read against the granules it selects and would throw for
+// exactly the hubs it is meant to measure.
+func explainStatement(side hopSide, addr string, maxSeconds int) (string, error) {
+	if !tronAddressRe.MatchString(addr) {
+		return "", fmt.Errorf("an address in a statement is not a Tron address")
+	}
+	return fmt.Sprintf(`EXPLAIN indexes = 1
+SELECT %[1]s FROM %[2]s WHERE %[1]s = %[3]s
+SETTINGS max_execution_time = %[4]d
+FORMAT JSON`, side.Self, side.Table, tronRaw(addr), maxSeconds), nil
+}
+
+// unbounded is the bound of an address whose whole history is read.
+const unbounded = uint32(4294967295)
+
+// historyStatement reads the report asset's transfers of a set of addresses on
+// one table, each address up to its own bound (Block_Time <= bound, in unix
+// seconds), in chain order.
+func historyStatement(side hopSide, addrs []string, bounds []uint32, asset tronAsset, maxRows int64, maxResult int, maxSeconds int) (string, error) {
+	list, err := quoteAddrs(addrs)
+	if err != nil {
+		return "", err
+	}
+	if len(bounds) != len(addrs) {
+		return "", fmt.Errorf("a bound per address is required")
+	}
+	b := make([]string, len(bounds))
+	top := uint32(0)
+	for i, x := range bounds {
+		b[i] = fmt.Sprintf("%d", x)
+		top = max(top, x)
+	}
+	prune := ""
+	if top != unbounded {
+		prune = fmt.Sprintf(" AND Block_Time <= toDateTime(%d, 'UTC')", top)
+	}
+	return fmt.Sprintf(`WITH %[1]s AS set_f,
+  arrayMap(x -> toFixedString(substring(base58Decode(x), 2, 20), 20), %[2]s) AS keys_f,
+  CAST([%[3]s], 'Array(UInt32)') AS bounds_f
+SELECT %[4]s AS Address, %[5]s AS Peer, toString(Transfer_Amount) AS Raw,
+  Block_Number, Transaction_Index, Call_Index, Log_Index, Transfer_Index,
+  toString(Block_Time) AS Time, lower(hex(Transaction_Hash)) AS Tx
+FROM %[6]s
+PREWHERE %[7]s IN (SELECT arrayJoin(set_f))
+WHERE %[8]s AND Transfer_Success = 1%[9]s AND toUInt32(Block_Time) <= bounds_f[indexOf(keys_f, %[7]s)]
+ORDER BY %[7]s, Block_Number, Transaction_Index, Call_Index, Log_Index, Transfer_Index, Transaction_Hash
+%[10]s
+FORMAT JSON`, tronSet(list), list, strings.Join(b, ", "), tronB58(side.Self), tronB58(side.Peer), side.Table, side.Self,
+		asset.cond(), prune, settings(maxRows, maxResult, maxSeconds)), nil
+}

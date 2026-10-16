@@ -109,6 +109,9 @@ type attribution struct {
 	Label      typedLabel
 	Entity     string
 	OtherTypes []string
+	// SourceClass, when set, is the row's label_source_class instead of the
+	// class labelSources gives its source (a mint has no label row).
+	SourceClass string
 }
 
 // attribute picks the entity type of an address for one direction: the highest

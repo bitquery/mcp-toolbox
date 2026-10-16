@@ -17,6 +17,7 @@ package riskreport
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -25,15 +26,128 @@ import (
 
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
 )
 
-// fakeChain answers the three Tron statements from canned rows and records
-// every statement it is sent.
+// fakeChain answers the Tron statements from canned rows and records every
+// statement it is sent. The multi-hop search's statements are answered from
+// transfers: each one is a receipt of its receiver and a send of its sender.
 type fakeChain struct {
 	assets, edges, other []map[string]any
 	statements           []string
 	urls                 []string
+
+	transfers []fakeTransfer
+	degree    map[string]int  // transfers per table; else counted from transfers
+	overflow  map[string]bool // a degree read holding the address overflows its row budget
+	granules  map[string]int  // EXPLAIN: primary-key granules (else 1)
+	noGranule map[string]bool // EXPLAIN: a text without a granule count
+}
+
+// explainRows answers EXPLAIN indexes = 1 of one address in the server's text
+// layout, one line per row.
+func (f *fakeChain) explainRows(s string) []map[string]any {
+	addr := ""
+	for _, a := range f.addresses() {
+		if mentioned(s, a) {
+			addr = a
+		}
+	}
+	g, ok := f.granules[addr]
+	if !ok {
+		g = 1
+	}
+	lines := []string{"Expression ((Project names + Projection))", "  Expression", "    ReadFromMergeTree (tron_api.transfers)",
+		"    Indexes:", "      MinMax", "        Condition: true", "        Parts: 120/120", "        Granules: 3000000/3000000",
+		"      Partition", "        Condition: true", "        Parts: 120/120", "        Granules: 3000000/3000000",
+		"      PrimaryKey", "        Keys:", "          Transfer_Sender", "        Condition: (Transfer_Sender in [x, x])",
+		"        Parts: 40/120", fmt.Sprintf("        Granules: %d/3000000", g)}
+	if f.noGranule[addr] {
+		lines = lines[:len(lines)-1]
+	}
+	rows := make([]map[string]any, len(lines))
+	for i, l := range lines {
+		rows[i] = map[string]any{"explain": l}
+	}
+	return rows
+}
+
+type fakeTransfer struct {
+	from, to string
+	raw      string
+	block    uint64
+	time     string
+	tx       string
+}
+
+// mentioned is whether a statement names an address as a literal.
+func mentioned(s, addr string) bool { return strings.Contains(s, "'"+addr+"'") }
+
+func (f *fakeChain) addresses() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(a string) {
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	for _, t := range f.transfers {
+		add(t.from)
+		add(t.to)
+	}
+	for a := range f.degree {
+		add(a)
+	}
+	for a := range f.overflow {
+		add(a)
+	}
+	return out
+}
+
+func (f *fakeChain) degreeRows(ctx context.Context, s string) ([]map[string]any, error) {
+	in := strings.Contains(s, "FROM "+tronReceiver)
+	var rows []map[string]any
+	for _, a := range f.addresses() {
+		if !mentioned(s, a) {
+			continue
+		}
+		if f.overflow[a] {
+			return nil, util.BitqueryDatabaseErrorResponse(ctx, "fake", 500, []byte("Code: 158. DB::Exception: Limit for rows (controlled by 'max_rows_to_read' setting) exceeded, max rows: 1.01 million, current rows: 114.14 million. (TOO_MANY_ROWS) (version 26.8.7.19 (official build))"))
+		}
+		n, ok := f.degree[a]
+		if !ok {
+			for _, t := range f.transfers {
+				if (in && t.to == a) || (!in && t.from == a) {
+					n++
+				}
+			}
+		}
+		if n > 0 {
+			rows = append(rows, map[string]any{"Address": a, "Degree": float64(n)})
+		}
+	}
+	return rows, nil
+}
+
+func (f *fakeChain) historyRows(s string) []map[string]any {
+	in := strings.Contains(s, "FROM "+tronReceiver)
+	var rows []map[string]any
+	for _, t := range f.transfers {
+		self, peer := t.from, t.to
+		if in {
+			self, peer = t.to, t.from
+		}
+		if !mentioned(s, self) {
+			continue
+		}
+		// 64-bit integers arrive quoted, as ClickHouse prints them.
+		rows = append(rows, map[string]any{"Address": self, "Peer": peer, "Raw": t.raw,
+			"Block_Number": fmt.Sprint(t.block), "Transaction_Index": float64(0), "Call_Index": float64(0), "Log_Index": float64(0),
+			"Transfer_Index": float64(0), "Time": t.time, "Tx": t.tx})
+	}
+	return rows
 }
 
 func (f *fakeChain) SourceType() string                    { return "http" }
@@ -44,7 +158,7 @@ func (f *fakeChain) HttpQueryParams() map[string]string {
 	return map[string]string{"default_format": "JSONEachRow"}
 }
 func (f *fakeChain) BitqueryLegacyBillingPaths() string { return "" }
-func (f *fakeChain) RunRequest(_ context.Context, req *http.Request) (any, error) {
+func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, error) {
 	body, _ := io.ReadAll(req.Body)
 	s := string(body)
 	f.statements = append(f.statements, s)
@@ -62,6 +176,15 @@ func (f *fakeChain) RunRequest(_ context.Context, req *http.Request) (any, error
 			r["R"] = float64(0)
 			rows = append(rows, r)
 		}
+	case strings.HasPrefix(s, "EXPLAIN"):
+		rows = f.explainRows(s)
+	case strings.Contains(s, "AS Degree"):
+		var err error
+		if rows, err = f.degreeRows(ctx, s); err != nil {
+			return nil, err
+		}
+	case strings.Contains(s, "AS Peer"):
+		rows = f.historyRows(s)
 	}
 	data := make([]any, len(rows))
 	for i, r := range rows {
@@ -95,6 +218,16 @@ func (f *fakeLabels) RunSQL(_ context.Context, s string, _ parameters.ParamValue
 
 func newTestTool(t *testing.T, chain *fakeChain, labels *fakeLabels) Tool {
 	t.Helper()
+	return newTestToolWith(t, chain, labels, nil)
+}
+
+// newTestToolWith builds the tool with a change to its method block.
+func newTestToolWith(t *testing.T, chain *fakeChain, labels *fakeLabels, change func(*MethodConfig)) Tool {
+	t.Helper()
+	mc := loadMethodConfig(t)
+	if change != nil {
+		change(&mc)
+	}
 	cfg := Config{
 		ConfigBase:   tools.ConfigBase{Name: "address_risk_report", Description: "risk report"},
 		Type:         resourceType,
@@ -107,8 +240,10 @@ func newTestTool(t *testing.T, chain *fakeChain, labels *fakeLabels) Tool {
 			parameters.NewStringParameter("asset", "asset", parameters.WithStringDefault("")),
 			parameters.NewStringParameter("direction", "direction", parameters.WithStringDefault("both")),
 			parameters.NewStringParameter("view", "view", parameters.WithStringDefault("direct")),
+			parameters.NewIntParameter("max_hops", "max_hops", parameters.WithIntRequired(false)),
+			parameters.NewFloatParameter("min_amount_usd", "min_amount_usd", parameters.WithFloatRequired(false)),
 		},
-		MethodConfig: loadMethodConfig(t),
+		MethodConfig: mc,
 	}
 	ctx := tools.WithSourceLookup(context.Background(), tools.SourceMap{"tron-src": chain, "labels-src": labels})
 	tool, err := cfg.Initialize(ctx)
@@ -302,7 +437,9 @@ func TestRefusals(t *testing.T) {
 		{"chain": "bitcoin", "address": at5Target},
 		{"chain": "solana", "address": at5Target},
 		{"chain": "tron", "address": "TDNb'; DROP TABLE x; --"},
-		{"chain": "tron", "address": at5Target, "view": "all"},
+		{"chain": "tron", "address": at5Target, "view": "deep"},
+		{"chain": "tron", "address": at5Target, "view": "all", "max_hops": 7},
+		{"chain": "tron", "address": at5Target, "view": "all", "max_hops": 0},
 		{"chain": "tron", "address": at5Target, "asset": "USDT"},
 		{"chain": "tron", "address": at5Target, "direction": "sideways"},
 	} {

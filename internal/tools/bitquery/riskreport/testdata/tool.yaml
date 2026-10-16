@@ -25,7 +25,7 @@ parameters:
     default: both
   - name: view
     type: string
-    description: direct.
+    description: direct (hop 1) or all (the multi-hop search).
     default: direct
   - name: format
     type: string
@@ -45,8 +45,8 @@ parameters:
     default: 100
   - name: max_hops
     type: integer
-    description: Depth of the search.
-    default: 1
+    description: Depth of the search (view all).
+    default: 3
   - name: weights
     type: map
     description: Partial override of the risk profile.

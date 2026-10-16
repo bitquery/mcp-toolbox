@@ -106,10 +106,14 @@ type Thresholds struct {
 	StatementMaxSeconds        int      `yaml:"statement_max_seconds"`
 	ReportRowsBudget           int64    `yaml:"report_rows_budget"`
 	DeadlineSeconds            int      `yaml:"deadline_s"`
-	// Read by the multi-hop search (not in the direct view yet).
+	// Read by the multi-hop search (view all).
 	HubTransfers int     `yaml:"hub_transfers"`
 	BranchMinUSD float64 `yaml:"branch_min_usd"`
 	MaxHops      int     `yaml:"max_hops"`
+	// GateRowsPerAddress is what one address costs to read at least, whatever
+	// its transfers (a granule in every partition it touches): the degree gate's
+	// and the history reads' row budgets are this plus hub_transfers per address.
+	GateRowsPerAddress int64 `yaml:"gate_rows_per_address"`
 }
 
 var defaultThresholds = Thresholds{
@@ -133,6 +137,7 @@ var defaultThresholds = Thresholds{
 	HubTransfers:               10000,
 	BranchMinUSD:               1,
 	MaxHops:                    3,
+	GateRowsPerAddress:         1_000_000,
 }
 
 // MethodConfig is the method block, inline in the tool's configuration.
@@ -410,6 +415,9 @@ func withDefaults(t Thresholds) Thresholds {
 	}
 	if t.MaxHops > 0 {
 		d.MaxHops = t.MaxHops
+	}
+	if t.GateRowsPerAddress > 0 {
+		d.GateRowsPerAddress = t.GateRowsPerAddress
 	}
 	return d
 }

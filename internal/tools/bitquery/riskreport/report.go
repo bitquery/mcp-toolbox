@@ -20,6 +20,7 @@ package riskreport
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"slices"
 	"sort"
@@ -28,6 +29,10 @@ import (
 
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
+
+// maxHopsCap is the deepest search a caller may ask for; the deadline and the
+// row budget end most searches sooner.
+const maxHopsCap = 6
 
 // noExposure is the answer when no counterparty carries an entity label. It
 // never says the address is clean: only that our labels found nothing.
@@ -114,6 +119,11 @@ type unnamedOut struct {
 	Sent         string   `json:"sent"`
 	SentHops     *int     `json:"sent_shortest_hops"`
 	EvidencePath []string `json:"evidence_path"`
+	// Cut is why the branch ended here (view all): hub, max_hops, budget,
+	// history_incomplete or unspent.
+	Cut string `json:"cut,omitempty"`
+	// Note qualifies the cut: a hub found without an estimate of its size.
+	Note string `json:"note,omitempty"`
 
 	recvRaw, sentRaw *big.Int
 }
@@ -154,6 +164,7 @@ type cutOut struct {
 	Reason       string `json:"reason"`
 	Direction    string `json:"direction,omitempty"`
 	Counterparts int64  `json:"counterparties"`
+	Amount       string `json:"amount,omitempty"`
 	Note         string `json:"note"`
 }
 
@@ -161,6 +172,7 @@ type paramsOut struct {
 	Method         string            `json:"method"`
 	View           string            `json:"view"`
 	Direction      string            `json:"direction"`
+	MaxHops        int               `json:"max_hops,omitempty"`
 	MaxHopsReached int               `json:"max_hops_reached"`
 	Window         map[string]string `json:"window"`
 	MinAmountUSD   float64           `json:"min_amount_usd"`
@@ -171,7 +183,9 @@ type paramsOut struct {
 	Complete       bool              `json:"complete"`
 	Cuts           []cutOut          `json:"cuts"`
 	Notes          []string          `json:"notes"`
-	GeneratedAt    string            `json:"generated_at"`
+	// The five invariants of view all, each "ok" or what it found.
+	Invariants  map[string]string `json:"invariants,omitempty"`
+	GeneratedAt string            `json:"generated_at"`
 }
 
 type reportOut struct {
@@ -185,10 +199,13 @@ type reportOut struct {
 	UnnamedMore        *unnamedMore              `json:"unnamed_more,omitempty"`
 	Breakdown          map[string][]breakdownRow `json:"breakdown"`
 	Unattributed       map[string]string         `json:"unattributed"`
-	Flags              []flagOut                 `json:"flags"`
-	Params             paramsOut                 `json:"params"`
-	Cost               costOut                   `json:"cost"`
-	TimingMS           int64                     `json:"timing_ms"`
+	// View all: the unattributed amount of each direction by the cut that ended
+	// its branches; they add up to unattributed.
+	UnattributedByCut map[string]map[string]string `json:"unattributed_by_cut,omitempty"`
+	Flags             []flagOut                    `json:"flags"`
+	Params            paramsOut                    `json:"params"`
+	Cost              costOut                      `json:"cost"`
+	TimingMS          int64                        `json:"timing_ms"`
 }
 
 // request is a validated call.
@@ -199,6 +216,7 @@ type request struct {
 	assetSet  bool
 	direction string
 	view      string
+	maxHops   int
 	w         window
 	minUSD    float64
 	weights   weights
@@ -241,11 +259,8 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if !slices.Contains([]string{"both", "received", "sent"}, r.direction) {
 		return r, agentErr("direction must be one of: both, received, sent")
 	}
-	if r.view != "direct" {
-		if r.view == "all" {
-			return r, agentErr("view all (connections beyond the first hop) is not available yet; use view direct")
-		}
-		return r, agentErr("view must be direct")
+	if r.view != "direct" && r.view != "all" {
+		return r, agentErr("view must be direct or all")
 	}
 	if f := strings.ToLower(str("format")); f != "" && f != "json" {
 		if f == "csv" {
@@ -265,10 +280,16 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		}
 		r.minUSD = f
 	}
+	r.maxHops = t.m.th.MaxHops
 	if v, ok := p["max_hops"]; ok && v != nil {
-		if n, ok := toFloat(v); !ok || n < 1 {
+		n, ok := toFloat(v)
+		if !ok || n < 1 {
 			return r, agentErr("max_hops must be 1 or more")
 		}
+		if n > maxHopsCap || n != math.Trunc(n) {
+			return r, agentErr("max_hops must be a whole number from 1 to %d", maxHopsCap)
+		}
+		r.maxHops = int(n)
 	}
 	var perr error
 	if r.w.After, perr = parseTime(str("after_time")); perr != nil {
@@ -399,6 +420,11 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		Notes:          []string{"exposure beyond the first hop was not assessed in this view"},
 		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
+	if req.view == "all" {
+		rep.Params.Method = "view all: counterparties in the report asset to max_hops hops; received funds traced backward and sent funds forward by the balance-aware rule, each branch ending at an entity label or a cut"
+		rep.Params.MaxHops = req.maxHops
+		rep.Params.Notes = []string{fmt.Sprintf("exposure deeper than %d hops was not assessed", req.maxHops)}
+	}
 	if !req.w.After.IsZero() {
 		rep.Params.Window["after_time"] = req.w.After.Format(time.RFC3339)
 	}
@@ -440,9 +466,11 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 	for _, d := range []direction{received, sent} {
 		if tot := edges.total[d]; tot.counterparties > int64(countDir(edges.rows, d)) {
-			rep.Params.Complete = false
-			rep.Params.Cuts = append(rep.Params.Cuts, cutOut{Reason: "counterparty_limit", Direction: d.String(), Counterparts: tot.counterparties - int64(countDir(edges.rows, d)),
-				Note: "the smallest counterparties were not looked up; their amounts are counted as unattributed"})
+			// View all lists every cut, with its amount, after the search.
+			if req.view != "all" {
+				rep.Params.Cuts = append(rep.Params.Cuts, cutOut{Reason: "counterparty_limit", Direction: d.String(), Counterparts: tot.counterparties - int64(countDir(edges.rows, d)),
+					Note: "the smallest counterparties were not looked up; their amounts are counted as unattributed"})
+			}
 		}
 		if n := other.total[d]; n > int64(countContacts(other.rows, d)) {
 			rep.Params.Cuts = append(rep.Params.Cuts, cutOut{Reason: "other_asset_counterparty_limit", Direction: d.String(), Counterparts: n - int64(countContacts(other.rows, d)),
@@ -461,6 +489,12 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	labels, err := ex.labelRows(ctx, req.chain, addrs)
 	if err != nil {
 		return nil, err
+	}
+	// The addresses whose labels were read (one without a label row is not in
+	// the map).
+	fetched := map[string]bool{}
+	for _, a := range addrs {
+		fetched[a] = true
 	}
 	classified := map[string]addressLabels{}
 	unmapped := map[string]bool{}
@@ -536,13 +570,83 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		attributed[d] = new(big.Int)
 		byTypeRaw[d] = map[string]*big.Int{}
 	}
+	// addConn attributes an amount that reached an entity at a hop, with the
+	// path's transfers (hop 1 first).
+	addConn := func(at attribution, cl addressLabels, addr string, d direction, raw *big.Int, hops int, evidence []string) {
+		attributed[d].Add(attributed[d], raw)
+		if byTypeRaw[d][at.Label.Type] == nil {
+			byTypeRaw[d][at.Label.Type] = new(big.Int)
+		}
+		byTypeRaw[d][at.Label.Type].Add(byTypeRaw[d][at.Label.Type], raw)
+
+		name := displayEntity(at, addr)
+		key := at.Label.Type + "\x00" + name
+		conn, ok := conns[key]
+		if !ok {
+			class := m.sourceClass(at.Label.Row.Source)
+			if at.SourceClass != "" {
+				class = at.SourceClass
+			}
+			conn = &connectionOut{Entity: name, EntityType: at.Label.Type, Subtype: at.Label.Subtype, LabelValue: at.Label.Row.Value,
+				LabelSource: at.Label.Row.Source, LabelSourceClass: class, LabelRecordedAt: at.Label.Row.RecordedAt,
+				recvRaw: new(big.Int), sentRaw: new(big.Int), Addresses: []string{}, EvidencePath: []string{}}
+			if at.Label.Type == licenceUnknownType {
+				conn.Licence = "unknown"
+			}
+			conns[key] = conn
+			connOrder = append(connOrder, key)
+		}
+		for _, src := range sourcesOf(cl, at.Label.Type) {
+			if src != conn.LabelSource && !slices.Contains(conn.OtherSources, src) {
+				conn.OtherSources = append(conn.OtherSources, src)
+			}
+		}
+		for _, o := range at.OtherTypes {
+			if !slices.Contains(conn.OtherTypes, o) {
+				conn.OtherTypes = append(conn.OtherTypes, o)
+			}
+		}
+		if !slices.Contains(conn.Addresses, addr) {
+			conn.Addresses = append(conn.Addresses, addr)
+		}
+		if d == received {
+			conn.recvRaw.Add(conn.recvRaw, raw)
+			if conn.ReceivedHops == nil || *conn.ReceivedHops > hops {
+				conn.ReceivedHops = intPtr(hops)
+			}
+		} else {
+			conn.sentRaw.Add(conn.sentRaw, raw)
+			if conn.SentHops == nil || *conn.SentHops > hops {
+				conn.SentHops = intPtr(hops)
+			}
+		}
+		// The connection's path is the first one found: the search goes hop by
+		// hop, so it is a shortest one.
+		if len(conn.EvidencePath) == 0 && len(evidence) > 0 {
+			conn.EvidencePath = evidence
+		}
+	}
+	// View all: the unlabelled 1-hop counterparties start the search.
+	var hop1 []*searchEntry
+	listed := map[direction]*big.Int{received: new(big.Int), sent: new(big.Int)}
 	for _, c := range edges.rows {
 		if !slices.Contains(dirs, c.Dir) {
 			continue
 		}
+		listed[c.Dir].Add(listed[c.Dir], c.RawAboveMin)
 		cl := classOf(c.Address)
 		at, ok := m.attribute(cl, req.weights, c.Dir)
 		if !ok {
+			if req.view == "all" {
+				if c.RawAboveMin.Sign() > 0 {
+					e := &searchEntry{dir: c.Dir, node: c.Address, amount: new(big.Int).Set(c.RawAboveMin), depth: 1, tx: firstOf(c.TxAboveDust, c.Tx)}
+					if t, err := time.Parse(time.DateTime, c.Last); err == nil && c.Dir == received {
+						e.bound = t.UTC()
+					}
+					hop1 = append(hop1, e)
+				}
+				continue
+			}
 			if c.RawAboveMin.Sign() > 0 {
 				u, seen := unnamed[c.Address]
 				if !seen {
@@ -592,47 +696,52 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		if c.RawAboveMin.Sign() == 0 {
 			continue
 		}
-		attributed[c.Dir].Add(attributed[c.Dir], c.RawAboveMin)
-		if byTypeRaw[c.Dir][at.Label.Type] == nil {
-			byTypeRaw[c.Dir][at.Label.Type] = new(big.Int)
+		var ev []string
+		if tx := firstOf(c.TxAboveDust, c.Tx); tx != "" {
+			ev = []string{tx}
 		}
-		byTypeRaw[c.Dir][at.Label.Type].Add(byTypeRaw[c.Dir][at.Label.Type], c.RawAboveMin)
+		addConn(at, cl, c.Address, c.Dir, c.RawAboveMin, 1, ev)
+	}
 
-		name := displayEntity(at, c.Address)
-		key := at.Label.Type + "\x00" + name
-		conn, ok := conns[key]
-		if !ok {
-			conn = &connectionOut{Entity: name, EntityType: at.Label.Type, Subtype: at.Label.Subtype, LabelValue: at.Label.Row.Value,
-				LabelSource: at.Label.Row.Source, LabelSourceClass: m.sourceClass(at.Label.Row.Source), LabelRecordedAt: at.Label.Row.RecordedAt,
-				recvRaw: new(big.Int), sentRaw: new(big.Int), Addresses: []string{}, EvidencePath: []string{}}
-			if at.Label.Type == licenceUnknownType {
-				conn.Licence = "unknown"
+	// View all: the search beyond hop 1.
+	if req.view == "all" {
+		srch := newSearch()
+		srch.m, srch.ex, srch.req, srch.asset, srch.target = m, ex, req, asset, req.address
+		srch.minRaw, srch.maxHops = minRaw, req.maxHops
+		srch.branchMin = usdRaw(th.BranchMinUSD, price, asset.Decimals)
+		srch.classOf, srch.attribute = classOf, addConn
+		srch.loadLabels = func(ctx context.Context, addrs []string) error {
+			var todo []string
+			for _, a := range addrs {
+				if !fetched[a] {
+					todo = append(todo, a)
+				}
 			}
-			conns[key] = conn
-			connOrder = append(connOrder, key)
-		}
-		for _, src := range sourcesOf(cl, at.Label.Type) {
-			if src != conn.LabelSource && !slices.Contains(conn.OtherSources, src) {
-				conn.OtherSources = append(conn.OtherSources, src)
+			if len(todo) == 0 {
+				return nil
 			}
-		}
-		for _, o := range at.OtherTypes {
-			if !slices.Contains(conn.OtherTypes, o) {
-				conn.OtherTypes = append(conn.OtherTypes, o)
+			got, err := ex.labelRows(ctx, req.chain, todo)
+			if err != nil {
+				return err
 			}
+			for a, rows := range got {
+				labels[a] = rows
+			}
+			for _, a := range todo {
+				fetched[a] = true
+			}
+			return nil
 		}
-		if !slices.Contains(conn.Addresses, c.Address) {
-			conn.Addresses = append(conn.Addresses, c.Address)
+		sctx, cancel := searchContext(ctx, th.DeadlineSeconds)
+		err := srch.run(sctx, hop1)
+		cancel()
+		if err != nil {
+			return nil, err
 		}
-		if c.Dir == received {
-			conn.recvRaw.Add(conn.recvRaw, c.RawAboveMin)
-			conn.ReceivedHops = intPtr(1)
-		} else {
-			conn.sentRaw.Add(conn.sentRaw, c.RawAboveMin)
-			conn.SentHops = intPtr(1)
-		}
-		if ev := firstOf(c.TxAboveDust, c.Tx); ev != "" && len(conn.EvidencePath) == 0 {
-			conn.EvidencePath = []string{ev}
+		rep.Params.MaxHopsReached = srch.maxReached
+		unnamed = srch.unnamed
+		if err := reconcile(rep, srch, dirs, edges, row, listed, attributed, asset.Decimals); err != nil {
+			return nil, err
 		}
 	}
 	for _, k := range connOrder {
@@ -872,7 +981,10 @@ func unnamedRows(u map[string]*unnamedOut, limit, decimals int) ([]unnamedOut, *
 		if c := ti.Cmp(tj); c != 0 {
 			return c > 0
 		}
-		return rows[i].Address < rows[j].Address
+		if rows[i].Address != rows[j].Address {
+			return rows[i].Address < rows[j].Address
+		}
+		return rows[i].Cut < rows[j].Cut
 	})
 	out := []unnamedOut{}
 	var more *unnamedMore
