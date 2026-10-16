@@ -103,7 +103,12 @@ func TestToolConfigRefusesUnknownKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad := strings.Replace(string(raw), "labelsSource: labels-src\n", "labelsSource: labels-src\nlabelSource: typo\n", 1)
+	// A checkout may give the file CRLF line ends; the edit below works on LF.
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	bad := strings.Replace(text, "labelsSource: labels-src\n", "labelsSource: labels-src\nlabelSource: typo\n", 1)
+	if bad == text {
+		t.Fatal("the fixture no longer holds the line this test edits")
+	}
 	if _, _, _, _, _, _, err := server.UnmarshalPrimitiveConfig(ctx, []byte(bad)); err == nil {
 		t.Errorf("a misspelt key was accepted")
 	}
