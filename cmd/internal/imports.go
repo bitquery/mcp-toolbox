@@ -90,6 +90,7 @@ import (
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/bigquery/bigquerysearchcatalog"
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/bigquery/bigquerysql"
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/bigtable"
+	_ "github.com/googleapis/mcp-toolbox/internal/tools/bitquery/riskreport"
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/cassandra/cassandracql"
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/clickhouse/clickhouseexecutesql"
 	_ "github.com/googleapis/mcp-toolbox/internal/tools/clickhouse/clickhouselistdatabases"
