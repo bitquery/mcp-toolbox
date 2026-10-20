@@ -104,10 +104,28 @@ type Service struct {
 	srvTTL  time.Duration
 	persist bool
 	client  *http.Client
+	// lookupSRV resolves the SRV name; nil means net.DefaultResolver (tests set it).
+	lookupSRV func(ctx context.Context, name string) ([]*net.SRV, error)
 
+	// srvMu guards the cached endpoint set and the lookup in flight. It is never
+	// held across a lookup.
 	srvMu        sync.Mutex
 	srvEndpoints []string
 	srvExpires   time.Time
+	srvLookup    *srvLookup // the lookup in flight, nil when none
+}
+
+// srvLookup is one SRV resolution, shared by every caller that waits for it. Its
+// result fields are written before done is closed.
+type srvLookup struct {
+	done      chan struct{}
+	endpoints []string
+	err       error
+}
+
+func defaultLookupSRV(ctx context.Context, name string) ([]*net.SRV, error) {
+	_, addrs, err := net.DefaultResolver.LookupSRV(ctx, "", "", name)
+	return addrs, err
 }
 
 var _ Client = (*Service)(nil)
@@ -283,37 +301,79 @@ func (s *Service) post(ctx context.Context, endpoint string, body []byte) (int, 
 // resolved and cached for srvTTL. On a resolution failure a previously cached
 // (even expired) result is reused, so a transient DNS blip does not disable the
 // hook.
+//
+// The lookup runs outside srvMu, one at a time, in a goroutine of its own bounded
+// by the configured timeout. While it runs, a caller with an expired set uses
+// that set at once; only a caller with nothing cached waits, for the lookup or
+// for its own context, whichever ends first. Up to 964ba806 the lock was held
+// across the lookup and every concurrent label call queued behind it.
 func (s *Service) endpoints(ctx context.Context) ([]string, error) {
 	if s.host != "" {
 		return []string{s.host}, nil
 	}
 
 	s.srvMu.Lock()
-	defer s.srvMu.Unlock()
-
 	if time.Now().Before(s.srvExpires) && len(s.srvEndpoints) > 0 {
-		return shuffled(s.srvEndpoints), nil
+		endpoints := shuffled(s.srvEndpoints)
+		s.srvMu.Unlock()
+		return endpoints, nil
 	}
+	lookup := s.srvLookup
+	if lookup == nil {
+		lookup = &srvLookup{done: make(chan struct{})}
+		s.srvLookup = lookup
+		go s.resolveSRV(context.WithoutCancel(ctx), lookup)
+	}
+	if len(s.srvEndpoints) > 0 {
+		endpoints := shuffled(s.srvEndpoints)
+		s.srvMu.Unlock()
+		return endpoints, nil
+	}
+	s.srvMu.Unlock()
 
-	_, addrs, err := net.DefaultResolver.LookupSRV(ctx, "", "", s.service)
-	if err != nil || len(addrs) == 0 {
-		if len(s.srvEndpoints) > 0 {
-			return shuffled(s.srvEndpoints), nil
+	select {
+	case <-lookup.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if lookup.err != nil {
+		return nil, lookup.err
+	}
+	return shuffled(lookup.endpoints), nil
+}
+
+// resolveSRV runs one SRV lookup and caches a non-empty answer. A failed lookup
+// leaves the cached set as it was, expired or not, so the next call tries again.
+func (s *Service) resolveSRV(ctx context.Context, lookup *srvLookup) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	resolve := s.lookupSRV
+	if resolve == nil {
+		resolve = defaultLookupSRV
+	}
+	addrs, err := resolve(ctx, s.service)
+	var endpoints []string
+	if err == nil && len(addrs) == 0 {
+		err = fmt.Errorf("no SRV records for %s", s.service)
+	}
+	if err == nil {
+		endpoints = make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			endpoints = append(endpoints, fmt.Sprintf("%s:%d", strings.TrimSuffix(a.Target, "."), a.Port))
 		}
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("no SRV records for %s", s.service)
 	}
 
-	endpoints := make([]string, 0, len(addrs))
-	for _, a := range addrs {
-		endpoints = append(endpoints, fmt.Sprintf("%s:%d", strings.TrimSuffix(a.Target, "."), a.Port))
+	s.srvMu.Lock()
+	if err == nil {
+		s.srvEndpoints = endpoints
+		s.srvExpires = time.Now().Add(s.srvTTL)
 	}
-	s.srvEndpoints = endpoints
-	s.srvExpires = time.Now().Add(s.srvTTL)
+	s.srvLookup = nil
+	s.srvMu.Unlock()
 
-	return shuffled(endpoints), nil
+	lookup.endpoints, lookup.err = endpoints, err
+	close(lookup.done)
 }
 
 func shuffled(in []string) []string {
