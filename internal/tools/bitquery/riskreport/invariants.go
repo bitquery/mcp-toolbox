@@ -112,7 +112,7 @@ func reconcile(rep *reportOut, s *search, dirs []direction, edges edgesResult, r
 					}
 				}
 				if unknown > 0 {
-					note += fmt.Sprintf("; %d of them without a size estimate (EXPLAIN gave no granule count), treated as hubs", unknown)
+					note += fmt.Sprintf("; %d of them without a size estimate, treated as hubs", unknown)
 				}
 			}
 			rep.Params.Cuts = append(rep.Params.Cuts, cutOut{Reason: r, Direction: d.String(), Counterparts: n,

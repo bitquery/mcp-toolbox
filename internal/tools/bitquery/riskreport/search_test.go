@@ -633,9 +633,10 @@ func TestMultiHopCuts(t *testing.T) {
 			notes[um["address"].(string)] = n
 		}
 	}
-	if notes[g.h] != "EXPLAIN on tron_api.transfers_receiver: 14000 primary-key granules, about 114688000 transfers" {
+	if notes[g.h] != "hub: about 114688000 transfers, estimated without reading the history" {
 		t.Errorf("H's note: %q", notes[g.h])
 	}
+	checkNotesUserSafe(t, out)
 	if !strings.HasPrefix(notes[g.h2], "10002 transfers of the report asset read") {
 		t.Errorf("H2's note: %q", notes[g.h2])
 	}
@@ -817,7 +818,7 @@ func TestNoStatementWithoutTime(t *testing.T) {
 	read := func(left time.Duration) error {
 		ctx, cancel := context.WithTimeout(context.Background(), left)
 		defer cancel()
-		_, _, err := ex.readSet(ctx, receiptsSide, []string{plainSender}, []uint32{unbounded}, asset)
+		_, _, err := ex.readSet(ctx, receiptsSide, []string{plainSender}, []uint32{unbounded}, asset, time.Time{})
 		return err
 	}
 	ex.took("history_receipts", 30*time.Second)
@@ -914,7 +915,7 @@ func TestRefusedStatementIsListed(t *testing.T) {
 	chain := &fakeChain{readCost: map[string]int64{plainSender: 10_000_000}}
 	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
 	asset := tronAsset{Key: usdtContract, Contract: usdtContract, Decimals: 6}
-	_, over, err := ex.readSet(context.Background(), receiptsSide, []string{plainSender}, []uint32{unbounded}, asset)
+	_, over, err := ex.readSet(context.Background(), receiptsSide, []string{plainSender}, []uint32{unbounded}, asset, time.Time{})
 	if err != nil || !over {
 		t.Fatalf("over = %v, err = %v; want a refusal for size", over, err)
 	}
@@ -1073,6 +1074,295 @@ func TestInvariantsRefuseABrokenLedger(t *testing.T) {
 	s.caps["x"] = &capState{initial: map[string]*big.Int{"a": big.NewInt(3)}, used: map[string]*big.Int{"a": big.NewInt(4)}}
 	if err := s.checkLinks(); err == nil || !strings.Contains(err.Error(), "over-attribution") {
 		t.Errorf("err = %v, want over-attribution", err)
+	}
+}
+
+// checkNotesUserSafe: a note reaches the caller, so it names no table and no
+// query-plan internals.
+func checkNotesUserSafe(t *testing.T, out map[string]any) {
+	t.Helper()
+	var notes []string
+	for _, u := range out["unnamed_connections"].([]any) {
+		if n, ok := u.(map[string]any)["note"].(string); ok {
+			notes = append(notes, n)
+		}
+	}
+	params := out["params"].(map[string]any)
+	for _, c := range params["cuts"].([]any) {
+		notes = append(notes, c.(map[string]any)["note"].(string))
+	}
+	for _, n := range params["notes"].([]any) {
+		notes = append(notes, n.(string))
+	}
+	for _, n := range notes {
+		for _, bad := range []string{"EXPLAIN", "granule", "tron_api", "transfers_sender", "transfers_receiver"} {
+			if strings.Contains(n, bad) {
+				t.Errorf("a note names %q: %q", bad, n)
+			}
+		}
+	}
+}
+
+// pinsOf returns the pins a statement carries.
+func pinsOf(s string) []string {
+	var out []string
+	for _, m := range pinRe.FindAllStringSubmatch(s, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// N9: the window is pinned once. A transfer to the target lands while the
+// report runs, between the assets statement and the counterparty statement;
+// a counterparty statement without the pin would count it, the summary would
+// not reconcile and view all would refuse the report. With the pin every
+// statement that reads transfers ends at the same second, which the report
+// prints as window.before_time and data_as_of.
+func TestWindowIsPinnedForEveryStatement(t *testing.T) {
+	g := newGraph(t)
+	g.chain.lateRaw, g.chain.lateTime = big.NewInt(1), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	tool := newTestTool(t, g.chain, g.labels)
+	before := time.Now().UTC().Truncate(time.Second)
+	res, err := tool.Invoke(context.Background(), g.chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": g.target,
+		"view": "all", "max_hops": 3, "min_amount_usd": 10.0}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	after := time.Now().UTC()
+	params := decode(t, res)["params"].(map[string]any)
+	asOf, _ := params["data_as_of"].(string)
+	if w := params["window"].(map[string]any)["before_time"]; w != asOf {
+		t.Errorf("window.before_time %v != data_as_of %q", w, asOf)
+	}
+	pin, perr := time.Parse(time.RFC3339, asOf)
+	if perr != nil || pin.Before(before) || pin.After(after) {
+		t.Fatalf("data_as_of %q is not the moment the report started (%s .. %s)", asOf, before, after)
+	}
+	want := pin.Format(time.DateTime)
+	data := 0
+	for _, s := range g.chain.statements {
+		if strings.HasPrefix(s, "EXPLAIN") {
+			// An EXPLAIN reads no transfers: it estimates an address's size.
+			continue
+		}
+		data++
+		pins := pinsOf(s)
+		need := 1
+		if strings.Contains(s, "UNION ALL") {
+			need = 2 // both table reads
+		}
+		if len(pins) < need {
+			t.Errorf("statement without the pin on each table read (%d):\n%s", len(pins), s)
+		}
+		for _, p := range pins {
+			if p != want {
+				t.Errorf("pin %s, want %s:\n%s", p, want, s)
+			}
+		}
+		switch {
+		case strings.Contains(s, "GROUP BY Native, SC, AssetId"):
+			t.Logf("assets statement:\n%s", s)
+		case strings.Contains(s, "AS Dir_Counterparties"):
+			t.Logf("counterparties statement:\n%s", s)
+			if strings.Contains(s, "WITH (SELECT") || strings.Contains(s, "first_in") {
+				t.Errorf("the counterparty statement reads the first receipt again:\n%s", s)
+			}
+			if !strings.Contains(s, "Block_Time <= toDateTime('2026-08-01 00:00:00', 'UTC') + INTERVAL 10 DAY") {
+				t.Errorf("the first receipt is not the assets statement's literal:\n%s", s)
+			}
+		case strings.Contains(s, "AS Peer"):
+			t.Logf("history statement:\n%s", s)
+		}
+	}
+	// assets, counterparties and the history reads of levels 1 and 2.
+	if data < 6 {
+		t.Errorf("only %d statements read transfers", data)
+	}
+
+	// The fake does tell an unpinned counterparty statement: it counts the
+	// late transfer.
+	ex := &executor{src: g.chain, th: withDefaults(Thresholds{})}
+	edges, _, cerr := ex.counterparties(context.Background(), cpInput{Addr: g.target, Asset: tronAsset{Key: usdtContract, Contract: usdtContract, Symbol: "USDT", Decimals: 6},
+		MinRaw: new(big.Int), DustRaw: new(big.Int), Limit: 10})
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if edges.total[received].raw.String() != "1000000001" {
+		t.Errorf("an unpinned statement totals %v, want the late transfer counted", edges.total[received].raw)
+	}
+}
+
+// The pin is the caller's before_time when it is in the past, and now when it
+// is later than now or not given; after_time must come before it.
+func TestPinTakesTheEarlierOfBeforeTimeAndNow(t *testing.T) {
+	chain := &fakeChain{}
+	tool := newTestTool(t, chain, &fakeLabels{})
+	now := time.Date(2026, 10, 20, 12, 30, 45, 600_000_000, time.UTC)
+	for _, tc := range []struct {
+		before string
+		want   time.Time
+	}{
+		{"", time.Date(2026, 10, 20, 12, 30, 45, 0, time.UTC)},
+		{"2099-01-01", time.Date(2026, 10, 20, 12, 30, 45, 0, time.UTC)},
+		{"2026-09-20 10:00:00", time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)},
+	} {
+		b, err := parseTime(tc.before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pinWindow(window{Before: b}, now).Before; !got.Equal(tc.want) {
+			t.Errorf("before_time %q: pin %s, want %s", tc.before, got, tc.want)
+		}
+	}
+	for _, p := range []map[string]any{
+		{"chain": "tron", "address": at5Target, "after_time": "2099-01-01"},
+		{"chain": "tron", "address": at5Target, "after_time": "2026-09-20", "before_time": "2026-09-20"},
+		{"chain": "tron", "address": at5Target, "before_time": "0001-01-01"},
+	} {
+		if _, err := tool.parse(p); err == nil {
+			t.Errorf("accepted %v", p)
+		}
+	}
+	r, err := tool.parse(map[string]any{"chain": "tron", "address": at5Target, "before_time": "2099-01-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.w.Before.After(time.Now()) || r.w.Before.IsZero() {
+		t.Errorf("a future before_time was not clamped to now: %s", r.w.Before)
+	}
+}
+
+// N23 / N17 / X-Bitquery-Table: the counterparty statement takes the first
+// receipt as a literal (no scalar read of the receipts), every statement's
+// URL holds the answer to the end of the query whatever the source says, and
+// the header names the bare table the statement reads.
+func TestStatementURLsAndHeaders(t *testing.T) {
+	g := newGraph(t)
+	tool := newTestTool(t, g.chain, g.labels)
+	if _, err := tool.Invoke(context.Background(), g.chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": g.target,
+		"view": "all", "max_hops": 3, "min_amount_usd": 10.0}), ""); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(g.chain.urls) < 8 || len(g.chain.headers) != len(g.chain.statements) {
+		t.Fatalf("urls %d, headers %d, statements %d", len(g.chain.urls), len(g.chain.headers), len(g.chain.statements))
+	}
+	for _, u := range g.chain.urls {
+		if !strings.Contains(u, "wait_end_of_query=1") || strings.Contains(u, "wait_end_of_query=0") {
+			t.Errorf("a statement URL without wait_end_of_query=1: %s", u)
+		}
+	}
+	explains := 0
+	for i, s := range g.chain.statements {
+		want := headerSender
+		if (strings.HasPrefix(s, "EXPLAIN") || strings.Contains(s, "AS Peer")) && strings.Contains(s, "FROM "+tronReceiver) {
+			want = headerReceiver
+		}
+		if strings.HasPrefix(s, "EXPLAIN") && strings.Contains(s, "FROM "+tronReceiver) {
+			explains++
+		}
+		if got := g.chain.headers[i]; got != want {
+			t.Errorf("X-Bitquery-Table %q, want %q:\n%s", got, want, s)
+		}
+		if strings.Count(s, "FROM "+tronReceiver) > 1 {
+			t.Errorf("a statement reads the receipts twice:\n%s", s)
+		}
+	}
+	if explains != 3 {
+		t.Errorf("receipts EXPLAINs = %d, want 3 (each labelled with the receiver table)", explains)
+	}
+}
+
+// N18: a contract or a TRC-10 asset id read from the database is checked
+// before it can reach a statement; an asset that fails is left out.
+func TestHostileAssetIdsAreSkipped(t *testing.T) {
+	hostileID := "1002000' OR 1=1 --"
+	hostileContract := "T' OR 1=1 --"
+	if c := (tronAsset{Key: "trc10:x", TRC10: hostileID}).cond(); c != "0" {
+		t.Errorf("TRC-10 cond of a hostile id: %s", c)
+	}
+	if c := (tronAsset{Key: hostileContract, Contract: hostileContract}).cond(); c != "0" {
+		t.Errorf("contract cond of a hostile value: %s", c)
+	}
+	chain := &fakeChain{
+		assets: []map[string]any{
+			{"Native": "0", "Contract": "", "AssetId": hostileID, "Symbol": "BAD", "Decimals": float64(0), "Received": "999999999", "Sent": "0",
+				"Received_All": "999999999", "Sent_All": "0", "n_in": float64(9), "n_out": float64(0), "txs": float64(9)},
+			{"Native": "0", "Contract": hostileContract, "AssetId": "", "Symbol": "BAD2", "Decimals": float64(0), "Received": "999999999", "Sent": "0",
+				"Received_All": "999999999", "Sent_All": "0", "n_in": float64(8), "n_out": float64(0), "txs": float64(8)},
+			usdtAssetRow("1000000000", "0", 1, 0),
+			{"Native": "0", "Contract": "", "AssetId": "1002000", "Symbol": "BTT", "Decimals": float64(6), "Received": "5", "Sent": "0",
+				"Received_All": "5", "Sent_All": "0", "n_in": float64(1), "n_out": float64(0), "txs": float64(1)},
+		},
+		edges: []map[string]any{edgeRow("in", plainSender, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "aa")},
+	}
+	tool := newTestTool(t, chain, &fakeLabels{})
+	res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var keys []string
+	for _, a := range decode(t, res)["summary"].(map[string]any)["assets"].([]any) {
+		keys = append(keys, a.(map[string]any)["asset"].(string))
+	}
+	if !slices.Equal(keys, []string{usdtContract, "trc10:1002000"}) {
+		t.Errorf("assets %v, want the hostile ones left out", keys)
+	}
+	for _, s := range chain.statements {
+		if strings.Contains(s, "OR 1=1") {
+			t.Errorf("a hostile value reached a statement:\n%s", s)
+		}
+	}
+	// Asked for by its id, the valid TRC-10 asset is the report asset and its
+	// filter carries the checked id.
+	chain.statements = nil
+	if _, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target, "asset": "1002000"}), ""); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(chain.statements) < 2 || !strings.Contains(chain.statements[1], "Transfer_Currency_AssetId = '1002000'") {
+		t.Errorf("the TRC-10 report asset's filter is missing")
+	}
+}
+
+// explain_limit caps the size estimates of a report: past it the rest of a
+// refused read are hubs that were not measured, and the ledger still closes.
+func TestExplainLimitCapsSizeEstimates(t *testing.T) {
+	g := newGraph(t)
+	tool := newTestToolWith(t, g.chain, g.labels, func(mc *MethodConfig) { mc.Thresholds.ExplainLimit = 2 })
+	res, err := tool.Invoke(context.Background(), g.chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": g.target,
+		"view": "all", "direction": "received", "max_hops": 3, "min_amount_usd": 10.0}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if n := countWith(g.chain.statements, "EXPLAIN"); n != 2 {
+		t.Errorf("EXPLAIN statements = %d, want 2", n)
+	}
+	out := decode(t, res)
+	unmeasured := 0
+	for _, u := range out["unnamed_connections"].([]any) {
+		if um := u.(map[string]any); um["note"] == hubNotMeasured {
+			unmeasured++
+			if um["cut"] != "hub" {
+				t.Errorf("an unmeasured address is not a hub: %v", um)
+			}
+		}
+	}
+	if unmeasured != 1 {
+		t.Errorf("unmeasured hubs = %d, want 1: %v", unmeasured, out["unnamed_connections"])
+	}
+	params := out["params"].(map[string]any)
+	for k, v := range params["invariants"].(map[string]any) {
+		if k != "history_integrity" && v != "ok" {
+			t.Errorf("invariant %s: %v", k, v)
+		}
+	}
+	for _, c := range params["cuts"].([]any) {
+		if cm := c.(map[string]any); cm["reason"] == "hub" && cm["direction"] == "received" && !strings.Contains(cm["note"].(string), "1 of them without a size estimate") {
+			t.Errorf("hub cut note: %v", cm["note"])
+		}
+	}
+	checkNotesUserSafe(t, out)
+	if def := withDefaults(Thresholds{}).ExplainLimit; def != 200 {
+		t.Errorf("default explain_limit = %d, want 200", def)
 	}
 }
 

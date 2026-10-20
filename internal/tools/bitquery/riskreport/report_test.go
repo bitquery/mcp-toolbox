@@ -19,12 +19,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"math/big"
 	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
@@ -39,6 +42,14 @@ type fakeChain struct {
 	assets, edges, other []map[string]any
 	statements           []string
 	urls                 []string
+	headers              []string // X-Bitquery-Table of each statement
+
+	// lateRaw is a transfer to the target that lands while the report runs,
+	// after the assets statement and before the counterparty statement, at
+	// lateTime: a counterparty statement sees it unless it reads only before
+	// a pin at or before lateTime. nil: no such transfer.
+	lateRaw  *big.Int
+	lateTime time.Time
 
 	transfers []fakeTransfer
 	// readCost is the rows a history read of the address costs on each table.
@@ -144,12 +155,28 @@ func (f *fakeChain) historyRows(s string) []map[string]any {
 	return rows
 }
 
+// pinRe finds the report's upper bound in a statement.
+var pinRe = regexp.MustCompile(`Block_Time < toDateTime\('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})', 'UTC'\)`)
+
+// seesLate is whether a statement reads up to a moment after t: it carries no
+// pin, or a pin later than t.
+func seesLate(s string, t time.Time) bool {
+	m := pinRe.FindStringSubmatch(s)
+	if m == nil {
+		return true
+	}
+	pin, err := time.Parse(time.DateTime, m[1])
+	return err != nil || pin.After(t)
+}
+
 func (f *fakeChain) SourceType() string                    { return "http" }
 func (f *fakeChain) ToConfig() sources.SourceConfig        { return nil }
 func (f *fakeChain) HttpBaseURL() string                   { return "http://gateway.test:8123" }
 func (f *fakeChain) HttpDefaultHeaders() map[string]string { return map[string]string{"X-Test": "1"} }
+
+// HttpQueryParams turns wait_end_of_query off: the report must set it itself.
 func (f *fakeChain) HttpQueryParams() map[string]string {
-	return map[string]string{"default_format": "JSONEachRow"}
+	return map[string]string{"default_format": "JSONEachRow", "wait_end_of_query": "0"}
 }
 func (f *fakeChain) BitqueryLegacyBillingPaths() string { return "" }
 func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, error) {
@@ -157,14 +184,22 @@ func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, err
 	s := string(body)
 	f.statements = append(f.statements, s)
 	f.urls = append(f.urls, req.URL.String())
+	f.headers = append(f.headers, req.Header.Get("X-Bitquery-Table"))
 	var rows []map[string]any
 	read := int64(1000)
 	switch {
 	case strings.Contains(s, "GROUP BY Native, SC, AssetId"):
 		rows = f.assets
-	case strings.Contains(s, "AS first_in"):
+	case strings.Contains(s, "AS Dir_Counterparties"):
+		late := f.lateRaw != nil && seesLate(s, f.lateTime)
 		for _, r := range f.edges {
 			r["R"] = float64(1)
+			if late && r["Dir"] == "in" {
+				// The late receipt is in this statement's totals.
+				c := maps.Clone(r)
+				c["Dir_Raw"] = new(big.Int).Add(asBig(r["Dir_Raw"]), f.lateRaw).String()
+				r = c
+			}
 			rows = append(rows, r)
 		}
 		for _, r := range f.other {
@@ -260,7 +295,8 @@ const (
 func usdtAssetRow(recv, sent string, nIn, nOut int) map[string]any {
 	return map[string]any{"Native": "0", "Contract": usdtContract, "AssetId": "", "Symbol": "USDT", "Decimals": float64(6),
 		"Received": recv, "Sent": sent, "Received_All": recv, "Sent_All": sent, "n_in": float64(nIn), "n_out": float64(nOut), "txs": float64(nIn + nOut),
-		"First": "2026-08-01 00:00:00", "Last": "2026-09-08 08:00:03", "First_All": "2026-08-01 00:00:00", "Last_All": "2026-09-08 08:00:03"}
+		"First": "2026-08-01 00:00:00", "Last": "2026-09-08 08:00:03", "First_All": "2026-08-01 00:00:00", "Last_All": "2026-09-08 08:00:03",
+		"First_In": "2026-08-01 00:00:00"}
 }
 
 func edgeRow(dir, addr, raw, rawMin, rawMax string, n int, dirTotals [4]string, tx ...string) map[string]any {
@@ -270,7 +306,7 @@ func edgeRow(dir, addr, raw, rawMin, rawMax string, n int, dirTotals [4]string, 
 	}
 	return map[string]any{"Dir": dir, "Counterparty": addr, "n": float64(n), "Raw": raw, "n_min": float64(n), "Raw_Above_Min": rawMin,
 		"n_dust": float64(0), "Raw_Max": rawMax, "Raw_Early": "0", "First": "2026-08-30 10:36:03", "Last": "2026-09-08 08:00:03",
-		"Tx_Above_Dust": txs, "Tx": txs, "First_Receipt": "2026-08-01 00:00:00",
+		"Tx_Above_Dust": txs, "Tx": txs,
 		"Dir_Counterparties": dirTotals[0], "Dir_Transfers": dirTotals[1], "Dir_Raw": dirTotals[2], "Dir_Raw_Above_Min": dirTotals[3]}
 }
 
@@ -446,6 +482,72 @@ func TestRefusals(t *testing.T) {
 	}
 	if len(chain.statements) != 0 {
 		t.Errorf("a refused call ran %d statements", len(chain.statements))
+	}
+}
+
+// timeParamRe is the after_time / before_time pattern of the tool's
+// configuration (risk.yaml).
+var timeParamRe = regexp.MustCompile(`^([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])([ T]([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]+)?)?(Z|[+-]([01][0-9]|2[0-3]):?[0-5][0-9])?)?|[0-9]{10})?$`)
+
+// N20: every spelling the pattern admits is read, to the instant it names.
+// The samples are the pattern's whole grammar: a date; a date and a time with
+// T or a space, minutes, seconds or seconds with a fraction, and no zone, Z,
+// +HH:MM or +HHMM; and unix seconds. The six the review found refused are
+// among them.
+func TestParseTimeReadsEverySpellingThePatternAdmits(t *testing.T) {
+	type sample struct {
+		in   string
+		want time.Time
+	}
+	at := func(h, m, s int) time.Time { return time.Date(2026, 9, 20, h, m, s, 0, time.UTC) }
+	samples := []sample{{"2026-09-20", at(0, 0, 0)}, {"1789862400", time.Unix(1789862400, 0).UTC()}}
+	for _, sep := range []string{"T", " "} {
+		for _, clock := range []struct {
+			text string
+			sec  int // a fraction rounds up to the next second
+		}{{"00:00", 0}, {"00:00:00", 0}, {"00:00:00.250", 1}} {
+			for _, zone := range []struct {
+				text  string
+				shift int
+			}{{"", 0}, {"Z", 0}, {"+03:00", -3}, {"+0300", -3}, {"-0130", 1}} {
+				in := "2026-09-20" + sep + clock.text + zone.text
+				want := at(0, 0, clock.sec).Add(time.Duration(zone.shift) * time.Hour)
+				if zone.text == "-0130" {
+					want = at(1, 30, clock.sec)
+				}
+				samples = append(samples, sample{in, want})
+			}
+		}
+	}
+	for _, s := range []string{"2026-09-20 00:00:00Z", "2026-09-20 00:00:00+03:00", "2026-09-20T00:00Z",
+		"2026-09-20T00:00:00+0300", "2026-09-20 00:00Z", "2026-09-20T00:00+03:00"} {
+		found := false
+		for _, x := range samples {
+			found = found || x.in == s
+		}
+		if !found {
+			t.Fatalf("the review's sample %q is not covered", s)
+		}
+	}
+	for _, s := range samples {
+		if !timeParamRe.MatchString(s.in) {
+			t.Fatalf("sample %q does not pass the pattern", s.in)
+		}
+		got, err := parseTime(s.in)
+		if err != nil {
+			t.Errorf("%q passes the pattern and is refused: %v", s.in, err)
+			continue
+		}
+		if !got.Equal(s.want) {
+			t.Errorf("%q = %s, want %s", s.in, got, s.want)
+		}
+	}
+	t.Logf("%d spellings read", len(samples))
+	// The pattern also admits impossible dates; those are refused, not read.
+	for _, s := range []string{"2026-02-30", "2026-09-31 00:00"} {
+		if _, err := parseTime(s); err == nil || !timeParamRe.MatchString(s) {
+			t.Errorf("%q: err = %v", s, err)
+		}
 	}
 }
 

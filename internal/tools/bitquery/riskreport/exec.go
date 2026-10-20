@@ -92,8 +92,9 @@ func (e *executor) maxRows() (int64, error) {
 	return min(left, e.th.StatementMaxRows), nil
 }
 
-// query posts one statement to the chain source and returns its rows.
-func (e *executor) query(ctx context.Context, name, table, statement string) ([]map[string]any, error) {
+// query posts one statement to the chain source and returns its rows. header
+// is the table the statement reads, as the X-Bitquery-Table header names it.
+func (e *executor) query(ctx context.Context, name, header, statement string) ([]map[string]any, error) {
 	if err := e.mayStart(ctx, name); err != nil {
 		return nil, err
 	}
@@ -118,6 +119,11 @@ func (e *executor) query(ctx context.Context, name, table, statement string) ([]
 	if stamp {
 		q.Set("query_id", qid)
 	}
+	// A statement answers FORMAT JSON, one document: with the answer held to
+	// the end of the query, a limit or a timeout that fires after the first
+	// block is an HTTP error (classified as a limit), not a body cut short.
+	// Set here, whatever the source's own parameters say.
+	q.Set("wait_end_of_query", "1")
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(statement))
 	if err != nil {
@@ -126,7 +132,7 @@ func (e *executor) query(ctx context.Context, name, table, statement string) ([]
 	for k, v := range e.src.HttpDefaultHeaders() {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("X-Bitquery-Table", table)
+	req.Header.Set("X-Bitquery-Table", header)
 	resp, err := e.src.RunRequest(ctx, req)
 	e.took(name, time.Since(start))
 	if err != nil {
@@ -247,6 +253,8 @@ type assetRow struct {
 	nIn, nOut, txs    int64
 	first, last       string
 	firstAll, lastAll string
+	// firstIn is the first receipt in the window (zero: none).
+	firstIn time.Time
 }
 
 func (a assetRow) out() assetOut {
@@ -264,7 +272,7 @@ func (e *executor) assets(ctx context.Context, addr string, w window) (assetsRes
 	if err != nil {
 		return assetsResult{}, err
 	}
-	rows, err := e.query(ctx, "assets", tronSender, assetsStatement(addr, w, maxRows, e.secs(ctx)))
+	rows, err := e.query(ctx, "assets", headerSender, assetsStatement(addr, w, maxRows, e.secs(ctx)))
 	if err != nil {
 		return assetsResult{}, err
 	}
@@ -279,18 +287,36 @@ func (e *executor) assets(ctx context.Context, addr string, w window) (assetsRes
 				a.Symbol = "TRX"
 			}
 		case asStr(r["Contract"]) != "":
+			// The contract and the TRC-10 id may be written into a later
+			// statement: an asset whose value fails the check is skipped.
+			if !tronAddressRe.MatchString(asStr(r["Contract"])) {
+				continue
+			}
 			a.Contract = asStr(r["Contract"])
 			a.Key = a.Contract
 		default:
+			if !trc10IDRe.MatchString(asStr(r["AssetId"])) {
+				continue
+			}
 			a.TRC10 = asStr(r["AssetId"])
 			a.Key = "trc10:" + a.TRC10
 		}
-		out.rows = append(out.rows, assetRow{
+		row := assetRow{
 			asset: a, recv: asBig(r["Received"]), sent: asBig(r["Sent"]), recvAll: asBig(r["Received_All"]), sentAll: asBig(r["Sent_All"]),
 			nIn: asInt(r["n_in"]), nOut: asInt(r["n_out"]), txs: asInt(r["txs"]),
 			first: emptyTime(asStr(r["First"])), last: emptyTime(asStr(r["Last"])),
 			firstAll: emptyTime(asStr(r["First_All"])), lastAll: emptyTime(asStr(r["Last_All"])),
-		})
+		}
+		// The first receipt goes into the counterparty statement as a literal:
+		// only a time that parses is kept, and it is formatted again there.
+		if s := emptyTime(asStr(r["First_In"])); s != "" {
+			t, err := time.Parse(time.DateTime, s)
+			if err != nil {
+				return assetsResult{}, fmt.Errorf("the assets statement returned a first receipt that is not a time")
+			}
+			row.firstIn = t.UTC()
+		}
+		out.rows = append(out.rows, row)
 	}
 	return out, nil
 }
@@ -376,7 +402,7 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 		return edgesResult{}, otherResult{}, err
 	}
 	in.MaxRows, in.MaxSecs = maxRows, e.secs(ctx)
-	rows, err := e.query(ctx, "counterparties", tronSender, counterpartiesStatement(in))
+	rows, err := e.query(ctx, "counterparties", headerSender, counterpartiesStatement(in))
 	if err != nil {
 		return edgesResult{}, otherResult{}, err
 	}
@@ -384,15 +410,15 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 		received: {raw: new(big.Int), rawAboveMin: new(big.Int)},
 		sent:     {raw: new(big.Int), rawAboveMin: new(big.Int)},
 	}}
+	if !in.FirstIn.IsZero() {
+		edges.firstReceipt = in.FirstIn.UTC().Format(time.DateTime)
+	}
 	other := otherResult{total: map[direction]int64{}}
 	for _, r := range rows {
 		d := dirOf(r["Dir"])
 		addr := asStr(r["Counterparty"])
 		if !tronAddressRe.MatchString(addr) {
 			return edgesResult{}, otherResult{}, fmt.Errorf("the counterparties statement returned an address that is not a Tron address")
-		}
-		if edges.firstReceipt == "" {
-			edges.firstReceipt = emptyTime(asStr(r["First_Receipt"]))
 		}
 		if asInt(r["R"]) == 1 {
 			edges.rows = append(edges.rows, counterparty{

@@ -205,6 +205,10 @@ func TestCompileMethodRefusesBadBlocks(t *testing.T) {
 		"no weight_unattrib.":  func(mc *MethodConfig) { mc.WeightUnattributed = nil },
 		"attribute and mapped": func(mc *MethodConfig) { mc.AttributeOnly = append(mc.AttributeOnly, "scam") },
 		"bad asset price":      func(mc *MethodConfig) { mc.AssetUSD = map[string]map[string]float64{"tron": {"X": -1}} },
+		// N21: a NaN weight would make every score NaN and fail every report
+		// at the JSON layer; max_hops is the default of a call without one.
+		"NaN weight_unattrib.": func(mc *MethodConfig) { nan := math.NaN(); mc.WeightUnattributed = &nan },
+		"max_hops over cap":    func(mc *MethodConfig) { mc.Thresholds.MaxHops = maxHopsCap + 3 },
 	}
 	for name, mutate := range cases {
 		mc := loadMethodConfig(t)
@@ -212,6 +216,20 @@ func TestCompileMethodRefusesBadBlocks(t *testing.T) {
 		mutate(&mc)
 		if _, err := compileMethod(mc); err == nil {
 			t.Errorf("%s: compiled", name)
+		}
+	}
+	mc := loadMethodConfig(t)
+	mc.Thresholds.MaxHops = maxHopsCap
+	if m, err := compileMethod(mc); err != nil || m.th.MaxHops != maxHopsCap {
+		t.Errorf("max_hops at the cap: %v", err)
+	}
+	m := loadMethod(t)
+	for _, bad := range []map[string]any{
+		{"weight_unattributed": math.NaN()},
+		{"Gambling": map[string]any{"weight": math.NaN()}},
+	} {
+		if _, err := m.mergeWeights(bad); err == nil {
+			t.Errorf("accepted %v", bad)
 		}
 	}
 }

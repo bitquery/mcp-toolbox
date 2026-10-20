@@ -114,6 +114,35 @@ func TestToolConfigRefusesUnknownKey(t *testing.T) {
 	}
 }
 
+// thresholds.explain_limit goes through the server's strict decoder and
+// reaches the method.
+func TestToolConfigReadsExplainLimit(t *testing.T) {
+	ctx, err := testutils.ContextWithNewLogger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("testdata/tool.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	with := strings.Replace(text, "\nthresholds:\n", "\nthresholds:\n  explain_limit: 150\n", 1)
+	if with == text {
+		t.Fatal("the fixture no longer holds the line this test edits")
+	}
+	_, _, _, toolCfgs, _, _, err := server.UnmarshalPrimitiveConfig(ctx, []byte(with))
+	if err != nil {
+		t.Fatalf("unable to unmarshal: %s", err)
+	}
+	tool, err := toolCfgs["address_risk_report"].Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := tool.(Tool).m.th.ExplainLimit; got != 150 {
+		t.Errorf("explain_limit = %d, want 150", got)
+	}
+}
+
 // translateUTF8 throws when its two alphabets differ in length, which would
 // fail every report.
 func TestConfusableAlphabetsMatch(t *testing.T) {

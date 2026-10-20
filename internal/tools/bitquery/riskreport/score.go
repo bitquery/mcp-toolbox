@@ -77,7 +77,7 @@ func (m *method) mergeWeights(override map[string]any) (weights, error) {
 		v := override[k]
 		if k == "weight_unattributed" {
 			f, ok := toFloat(v)
-			if !ok || f < 0 || f > 100 {
+			if !ok || f < 0 || f > 100 || math.IsNaN(f) {
 				return w, fmt.Errorf("weights.weight_unattributed must be a number from 0 to 100")
 			}
 			w.unattributed = f
@@ -95,7 +95,7 @@ func (m *method) mergeWeights(override map[string]any) (weights, error) {
 			switch fk {
 			case "weight":
 				f, ok := toFloat(fv)
-				if !ok || f < 0 || f > 100 {
+				if !ok || f < 0 || f > 100 || math.IsNaN(f) {
 					return w, fmt.Errorf("weights.%s.weight must be a number from 0 to 100", k)
 				}
 				tw.Weight = f

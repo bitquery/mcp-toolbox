@@ -184,8 +184,11 @@ type paramsOut struct {
 	Cuts           []cutOut          `json:"cuts"`
 	Notes          []string          `json:"notes"`
 	// The five invariants of view all, each "ok" or what it found.
-	Invariants  map[string]string `json:"invariants,omitempty"`
-	GeneratedAt string            `json:"generated_at"`
+	Invariants map[string]string `json:"invariants,omitempty"`
+	// DataAsOf is the report's pin: every statement read the chain strictly
+	// before it (also window.before_time).
+	DataAsOf    string `json:"data_as_of"`
+	GeneratedAt string `json:"generated_at"`
 }
 
 type reportOut struct {
@@ -298,8 +301,17 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if r.w.Before, perr = parseTime(str("before_time")); perr != nil {
 		return r, agentErr("before_time: %s", perr.Error())
 	}
-	if !r.w.After.IsZero() && !r.w.Before.IsZero() && !r.w.After.Before(r.w.Before) {
-		return r, agentErr("after_time must be earlier than before_time")
+	if str("before_time") != "" && r.w.Before.IsZero() {
+		// The zero time stands for "not given"; a window ending there is empty.
+		return r, agentErr("before_time must be later than 0001-01-01")
+	}
+	given := r.w.Before
+	r.w = pinWindow(r.w, time.Now())
+	if !r.w.After.Before(r.w.Before) {
+		if !given.IsZero() && given.Equal(r.w.Before) {
+			return r, agentErr("after_time must be earlier than before_time")
+		}
+		return r, agentErr("after_time must be in the past")
 	}
 	override, _ := p["weights"].(map[string]any)
 	w, werr := t.m.mergeWeights(override)
@@ -310,8 +322,41 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	return r, nil
 }
 
+// pinWindow fixes the window's end once, at the start of the report: the
+// caller's before_time when it is in the past, else now (to the second). Every
+// statement then reads strictly before the same moment, so the assets
+// statement and the counterparty statement, which run seconds apart, total
+// the same transfers, and a transfer that lands while the report runs is in
+// none of them. Residual: a row ingested late, with a Block_Time below the pin,
+// can still be seen by a later statement and not by an earlier one.
+func pinWindow(w window, now time.Time) window {
+	pin := now.UTC().Truncate(time.Second)
+	if w.Before.IsZero() || w.Before.After(pin) {
+		w.Before = pin
+	}
+	return w
+}
+
+// timeLayouts are the spellings the after_time / before_time pattern admits:
+// a date, or a date and a time with a T or a space, minutes or seconds (a
+// fraction is read after the seconds), and no zone, Z, +HH:MM or +HHMM.
+var timeLayouts = func() []string {
+	out := []string{time.DateOnly}
+	for _, sep := range []string{"T", " "} {
+		for _, clock := range []string{"15:04:05", "15:04"} {
+			for _, zone := range []string{"", "Z07:00", "Z0700"} {
+				out = append(out, "2006-01-02"+sep+clock+zone)
+			}
+		}
+	}
+	return out
+}()
+
 // parseTime reads YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS], ISO-8601 with an optional
-// fraction and offset, or 10-digit unix seconds. "" is an open end.
+// fraction and offset, or 10-digit unix seconds. A fraction rounds up to the
+// next second: Block_Time holds whole seconds, so ">= x.5" is ">= x+1" and
+// "< x.5" is "< x+1", and the statements print whole seconds. "" is an open
+// end.
 func parseTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
@@ -321,9 +366,13 @@ func parseTime(s string) (time.Time, error) {
 		fmt.Sscanf(s, "%d", &sec)
 		return time.Unix(sec, 0).UTC(), nil
 	}
-	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", time.DateOnly} {
+	for _, layout := range timeLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
+			t = t.UTC()
+			if whole := t.Truncate(time.Second); whole.Before(t) {
+				return whole.Add(time.Second), nil
+			}
+			return t, nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("use YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS], ISO-8601 or 10-digit unix seconds")
@@ -428,9 +477,10 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	if !req.w.After.IsZero() {
 		rep.Params.Window["after_time"] = req.w.After.Format(time.RFC3339)
 	}
-	if !req.w.Before.IsZero() {
-		rep.Params.Window["before_time"] = req.w.Before.Format(time.RFC3339)
-	}
+	// The pin (parse sets it on every call): the end of the window and the
+	// moment the data is as of.
+	rep.Params.Window["before_time"] = req.w.Before.UTC().Format(time.RFC3339)
+	rep.Params.DataAsOf = req.w.Before.UTC().Format(time.RFC3339)
 
 	// 1. Every asset of the address.
 	assets, err := ex.assets(ctx, req.address, req.w)
@@ -459,7 +509,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 
 	// 2. The 1-hop counterparties, in the report asset and in every other one.
-	edges, other, err := ex.counterparties(ctx, cpInput{Addr: req.address, Asset: asset, W: req.w, MinRaw: minRaw, DustRaw: dustRaw,
+	edges, other, err := ex.counterparties(ctx, cpInput{Addr: req.address, Asset: asset, W: req.w, FirstIn: row.firstIn, MinRaw: minRaw, DustRaw: dustRaw,
 		NativeDust: th.NativeDustUnits, EarlyDays: th.PassThroughDays, Limit: th.CounterpartyLimit})
 	if err != nil {
 		return nil, err
@@ -530,8 +580,10 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 	bal := new(big.Int).Sub(row.recvAll, row.sentAll)
 	rep.Summary.Balance = formatUnits(bal, asset.Decimals)
-	if !req.w.open() {
-		rep.Params.Notes = append(rep.Params.Notes, "balance is over the whole history; received, sent, tx_count and activity are in the window")
+	// The window always ends at the pin, as the balance does; they differ only
+	// when the window has a start.
+	if !req.w.After.IsZero() {
+		rep.Params.Notes = append(rep.Params.Notes, "balance is over the whole history up to before_time; received, sent, tx_count and activity are in the window")
 	}
 	for _, a := range assets.rows {
 		rep.Summary.Assets = append(rep.Summary.Assets, a.out())

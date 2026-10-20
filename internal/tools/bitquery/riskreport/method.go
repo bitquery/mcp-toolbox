@@ -114,6 +114,10 @@ type Thresholds struct {
 	// its transfers (a granule in every partition it touches): a history read's
 	// row budget is this plus hub_transfers per address.
 	GateRowsPerAddress int64 `yaml:"gate_rows_per_address"`
+	// ExplainLimit is the most size estimates (one statement each) a report
+	// sends; past it, the rest of a refused history read are hubs that were
+	// not measured.
+	ExplainLimit int `yaml:"explain_limit"`
 }
 
 var defaultThresholds = Thresholds{
@@ -140,6 +144,7 @@ var defaultThresholds = Thresholds{
 	// Measured per address and table: 0.15M rows (62 addresses, 9.08M) to
 	// about 1.0M (one address read alone); 3M leaves room above both.
 	GateRowsPerAddress: 3_000_000,
+	ExplainLimit:       200,
 }
 
 // MethodConfig is the method block, inline in the tool's configuration.
@@ -241,7 +246,7 @@ func compileMethod(mc MethodConfig) (*method, error) {
 	if mc.WeightUnattributed == nil {
 		return nil, fmt.Errorf("weight_unattributed is required")
 	}
-	if w := *mc.WeightUnattributed; w < 0 || w > 100 {
+	if w := *mc.WeightUnattributed; w < 0 || w > 100 || math.IsNaN(w) {
 		return nil, fmt.Errorf("weight_unattributed must be between 0 and 100")
 	}
 	m.weightUnattributed = *mc.WeightUnattributed
@@ -296,6 +301,11 @@ func compileMethod(mc MethodConfig) (*method, error) {
 	}
 	m.sourcePref = mc.SourcePreference
 	m.th = withDefaults(mc.Thresholds)
+	// A call without max_hops takes this one, so it is held to the same cap
+	// as the parameter.
+	if m.th.MaxHops > maxHopsCap {
+		return nil, fmt.Errorf("thresholds.max_hops must be from 1 to %d", maxHopsCap)
+	}
 	for _, t := range m.th.DirectSanctionsTypes {
 		if _, ok := m.profile[t]; !ok {
 			return nil, fmt.Errorf("thresholds.direct_sanctions_types: %q is not in the profile", t)
@@ -420,6 +430,9 @@ func withDefaults(t Thresholds) Thresholds {
 	}
 	if t.GateRowsPerAddress > 0 {
 		d.GateRowsPerAddress = t.GateRowsPerAddress
+	}
+	if t.ExplainLimit > 0 {
+		d.ExplainLimit = t.ExplainLimit
 	}
 	return d
 }

@@ -26,12 +26,14 @@ package riskreport
 //  3. at the last hop the rest ends: cut max_hops;
 //  4. the history of the rest, one statement per table for the whole frontier,
 //     a received-side address read up to the latest transfer that links it to
-//     the path, a sent-side address over its whole history. A statement's row
-//     budget and result cap are per address, so a set holding a hub is refused;
-//     then an EXPLAIN of each address alone (reading nothing) estimates its
-//     size, the largest are hubs until the rest fits, and the rest is read. An
-//     address whose rows alone exceed hub_transfers is a hub too. A hub's
-//     branch ends: cut hub;
+//     the path, a sent-side address over its whole history, and every one only
+//     before the report's pin. A statement's row budget and result cap are per
+//     address, so a set holding a hub is refused; then an EXPLAIN of each
+//     address alone (reading nothing) estimates its size, the largest are hubs
+//     until the rest fits, and the rest is read (past explain_limit EXPLAINs in
+//     a report, the rest of a refused set are hubs without a size). An address
+//     whose rows alone exceed hub_transfers is a hub too. A hub's branch ends:
+//     cut hub;
 //  5. the balance-aware attribution (attrib.go) splits each branch's amount over
 //     the address's sources (received side) or destinations (sent side): those
 //     are the next frontier.
@@ -71,10 +73,12 @@ var cutNotes = map[string]string{
 	"unspent":            "still held by an unlabelled address",
 }
 
-// The notes of hubs that were not measured.
+// The notes of hubs that were not measured. A note reaches the caller: it
+// says what was found, never how (no table, no query plan).
 const (
-	hubWithoutEstimate = "no granule estimate from EXPLAIN: treated as a hub without a count"
+	hubWithoutEstimate = "hub: its size could not be estimated without reading its history; treated as a hub without a count"
 	hubStillOver       = "still over the read budget after the largest estimates were removed: treated as a hub without a count"
+	hubNotMeasured     = "hub: not measured, the report's limit on size estimates was reached; treated as a hub without a count"
 )
 
 // readRetries is how many times a set refused for its size is read again,
@@ -174,6 +178,7 @@ type search struct {
 	hubNote       map[string]string
 	hubUnmeasured map[string]bool
 	granules      map[string]int64 // EXPLAIN estimates, by table and address
+	explains      int              // EXPLAINs sent, against explain_limit
 	events        map[string][]histEvent
 	readTo        map[string]uint32
 	flowMemo      map[string]*flows
@@ -502,7 +507,8 @@ func boundsFor(addrs []string, need map[string]uint32) []uint32 {
 // again, and while it is still refused its largest estimate is a hub too. It
 // returns the rows and the addresses read.
 func (s *search) readSide(ctx context.Context, side hopSide, chunk []string, need map[string]uint32) ([]histRow, []string, error) {
-	rows, over, err := s.ex.readSet(ctx, side, chunk, boundsFor(chunk, need), s.asset)
+	pin := s.req.w.Before
+	rows, over, err := s.ex.readSet(ctx, side, chunk, boundsFor(chunk, need), s.asset, pin)
 	if err != nil || !over {
 		return rows, chunk, err
 	}
@@ -511,7 +517,7 @@ func (s *search) readSide(ctx context.Context, side hopSide, chunk []string, nee
 		return nil, nil, err
 	}
 	for attempt := 0; len(rest) > 0; attempt++ {
-		rows, over, err = s.ex.readSet(ctx, side, rest, boundsFor(rest, need), s.asset)
+		rows, over, err = s.ex.readSet(ctx, side, rest, boundsFor(rest, need), s.asset, pin)
 		if err != nil || !over {
 			return rows, rest, err
 		}
@@ -529,13 +535,16 @@ func (s *search) readSide(ctx context.Context, side hopSide, chunk []string, nee
 
 func (s *search) granuleNote(side hopSide, addr string) string {
 	g := s.granules[side.Table+"\x00"+addr]
-	return fmt.Sprintf("EXPLAIN on %s: %d primary-key granules, about %d transfers", side.Table, g, g*granuleRows)
+	return fmt.Sprintf("hub: about %d transfers, estimated without reading the history", g*granuleRows)
 }
 
 // hubsByExplain estimates each address of a refused set from an EXPLAIN of it
 // alone, marks the largest as hubs until the rest fits the set's row budget,
 // and returns the rest, largest estimate first. An address whose EXPLAIN gives
-// no granule count is a hub that was not measured.
+// no granule count is a hub that was not measured, and so is every address
+// left once the report has sent explain_limit EXPLAINs: each one is a billed
+// statement, and a level of unlabelled addresses must not spend the deadline
+// on them.
 func (s *search) hubsByExplain(ctx context.Context, side hopSide, chunk []string) ([]string, error) {
 	type est struct {
 		addr string
@@ -543,6 +552,11 @@ func (s *search) hubsByExplain(ctx context.Context, side hopSide, chunk []string
 	}
 	var ests []est
 	for _, a := range chunk {
+		if s.explains >= s.ex.th.ExplainLimit {
+			s.markHub(a, hubNotMeasured, true)
+			continue
+		}
+		s.explains++
 		g, ok, err := s.ex.granules(ctx, side, a)
 		if err != nil {
 			return nil, err

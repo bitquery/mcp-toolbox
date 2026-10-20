@@ -39,6 +39,14 @@ const (
 	tronReceiver = "tron_api.transfers_receiver"
 )
 
+// The X-Bitquery-Table header names the table a statement reads, bare, as the
+// configured http tools send it. A statement that reads both tables carries
+// the sender table, as the configured two-table tools do.
+const (
+	headerSender   = "transfers_sender"
+	headerReceiver = "transfers_receiver"
+)
+
 // tronRaw is the FixedString(20) form of a validated base58 address.
 func tronRaw(addr string) string {
 	return fmt.Sprintf("substring(base58Decode('%s'), 2, 20)", addr)
@@ -59,14 +67,22 @@ type tronAsset struct {
 	Decimals int
 }
 
-// cond is the asset filter of a transfer row.
+// cond is the asset filter of a transfer row. The contract and the TRC-10 id
+// are checked here as well as where they are read, so an asset that skipped
+// a check matches no row instead of reaching the statement.
 func (a tronAsset) cond() string {
 	switch {
 	case a.Native:
 		return "Transfer_Currency_Native = 1"
 	case a.Contract != "":
+		if !tronAddressRe.MatchString(a.Contract) {
+			return "0"
+		}
 		return "Transfer_Currency_SmartContract = " + tronRaw(a.Contract)
 	default:
+		if !trc10IDRe.MatchString(a.TRC10) {
+			return "0"
+		}
 		return fmt.Sprintf("(Transfer_Currency_Native = 0 AND length(Transfer_Currency_SmartContract) = 0 AND Transfer_Currency_AssetId = '%s')", a.TRC10)
 	}
 }
@@ -88,23 +104,31 @@ func parseTronAsset(s string) (tronAsset, bool, error) {
 	return tronAsset{}, false, fmt.Errorf("asset must be TRX, a token contract address (T...) or a TRC-10 asset id")
 }
 
-// window is the analysis window; zero times are open ends.
+// window is the analysis window; a zero After is an open start. Before is the
+// report's pin (see pinWindow): every statement that reads transfers reads
+// them strictly before it, so all of them see the same chain.
 type window struct {
 	After, Before time.Time
 }
 
-func (w window) cond() string {
-	var b strings.Builder
-	if !w.After.IsZero() {
-		fmt.Fprintf(&b, " AND Block_Time >= toDateTime('%s', 'UTC')", w.After.UTC().Format(time.DateTime))
+// lower is the window's start bound as statement text ("" when open).
+func (w window) lower() string {
+	if w.After.IsZero() {
+		return ""
 	}
-	if !w.Before.IsZero() {
-		fmt.Fprintf(&b, " AND Block_Time < toDateTime('%s', 'UTC')", w.Before.UTC().Format(time.DateTime))
-	}
-	return b.String()
+	return fmt.Sprintf(" AND Block_Time >= toDateTime('%s', 'UTC')", w.After.UTC().Format(time.DateTime))
 }
 
-func (w window) open() bool { return w.After.IsZero() && w.Before.IsZero() }
+// pinCond is the report's upper bound as statement text, the one formatter of
+// it, so every statement carries it byte for byte ("" for a zero time).
+func pinCond(before time.Time) string {
+	if before.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf(" AND Block_Time < toDateTime('%s', 'UTC')", before.UTC().Format(time.DateTime))
+}
+
+func (w window) cond() string { return w.lower() + pinCond(w.Before) }
 
 // stopSettings end a statement at its time limit with an error (never a
 // partial result, which would break the report's ledger) and cancel it on the
@@ -117,15 +141,18 @@ func settings(maxRows int64, maxResult int, maxSeconds int) string {
 }
 
 // assetsStatement totals every asset of the address: in the window and over the
-// whole history.
+// whole history up to the pin (the pin bounds both table reads, so the balance
+// and the window totals end at the same moment). First_In is the first receipt
+// of each asset in the window; the counterparty statement takes the report
+// asset's as a literal instead of reading the receipts again.
 func assetsStatement(addr string, w window, maxRows int64, maxSeconds int) string {
 	inWin := "1"
-	if c := w.cond(); c != "" {
+	if c := w.lower(); c != "" {
 		inWin = strings.TrimPrefix(c, " AND ")
 	}
 	return fmt.Sprintf(`SELECT Native, Contract, AssetId, Symbol, Decimals,
   toString(recv_w) AS Received, toString(sent_w) AS Sent, toString(recv_all) AS Received_All, toString(sent_all) AS Sent_All,
-  n_in, n_out, txs, First, Last, First_All, Last_All
+  n_in, n_out, txs, First, Last, First_All, Last_All, First_In
 FROM (
   SELECT Native, %[3]s AS Contract, AssetId,
     any(Symbol0) AS Symbol, any(Decimals0) AS Decimals,
@@ -134,29 +161,34 @@ FROM (
     countIf(Dir = 'in' AND W) AS n_in, countIf(Dir = 'out' AND W) AS n_out,
     uniqExactIf(Tx, W) AS txs,
     toString(minIf(T, W)) AS First, toString(maxIf(T, W)) AS Last,
-    toString(min(T)) AS First_All, toString(max(T)) AS Last_All
+    toString(min(T)) AS First_All, toString(max(T)) AS Last_All,
+    toString(minIf(T, Dir = 'in' AND W)) AS First_In
   FROM (
     SELECT 'in' AS Dir, Transfer_Currency_Native AS Native, Transfer_Currency_SmartContract AS SC, Transfer_Currency_AssetId AS AssetId,
       Transfer_Currency_Symbol AS Symbol0, Transfer_Currency_Decimals AS Decimals0, Transfer_Amount AS Amount, Transaction_Hash AS Tx, Block_Time AS T, (%[4]s) AS W
-    FROM %[5]s WHERE Transfer_Receiver = %[1]s AND Transfer_Success = 1
+    FROM %[5]s WHERE Transfer_Receiver = %[1]s AND Transfer_Success = 1%[7]s
     UNION ALL
     SELECT 'out', Transfer_Currency_Native, Transfer_Currency_SmartContract, Transfer_Currency_AssetId,
       Transfer_Currency_Symbol, Transfer_Currency_Decimals, Transfer_Amount, Transaction_Hash, Block_Time, (%[4]s)
-    FROM %[6]s WHERE Transfer_Sender = %[1]s AND Transfer_Success = 1
+    FROM %[6]s WHERE Transfer_Sender = %[1]s AND Transfer_Success = 1%[7]s
   )
   GROUP BY Native, SC, AssetId
 )
 ORDER BY n_in + n_out DESC, Contract, AssetId
 LIMIT 200
 %[2]s
-FORMAT JSON`, tronRaw(addr), settings(maxRows, 1000, maxSeconds), "if(length(SC) = 20, "+tronB58("SC")+", '')", inWin, tronReceiver, tronSender)
+FORMAT JSON`, tronRaw(addr), settings(maxRows, 1000, maxSeconds), "if(length(SC) = 20, "+tronB58("SC")+", '')", inWin, tronReceiver, tronSender,
+		pinCond(w.Before))
 }
 
 // cpInput holds the numbers written into the counterparty statement.
 type cpInput struct {
-	Addr       string
-	Asset      tronAsset
-	W          window
+	Addr  string
+	Asset tronAsset
+	W     window
+	// FirstIn is the first receipt of the report asset in the window, from the
+	// assets statement (zero: none).
+	FirstIn    time.Time
 	MinRaw     *big.Int
 	DustRaw    *big.Int
 	NativeDust int64
@@ -178,6 +210,8 @@ const (
 // asset (native dust, native transfers above it, tokens that carry the report
 // asset's symbol, or a look-alike of it, on another contract). Totals per
 // (direction, R) cover ALL counterparties: window functions run before LIMIT BY.
+// The early sends are measured from the first receipt, a time literal formatted
+// here from a parsed time; with no receipt in the window there are none.
 func counterpartiesStatement(in cpInput) string {
 	asset := in.Asset.cond()
 	win := in.W.cond()
@@ -200,24 +234,27 @@ func counterpartiesStatement(in cpInput) string {
   GROUP BY C, R`, dir, table, self, other, asset, win, in.MinRaw.String(), in.DustRaw.String(), early, tronRaw(in.Addr),
 			in.NativeDust, tronB58("Transfer_Currency_SmartContract"), imitation)
 	}
-	early := fmt.Sprintf("sumIf(Transfer_Amount, Block_Time <= first_in + INTERVAL %d DAY)", in.EarlyDays)
-	return fmt.Sprintf(`WITH (SELECT min(Block_Time) FROM %[1]s WHERE Transfer_Receiver = %[2]s AND %[3]s AND Transfer_Success = 1%[4]s) AS first_in
-SELECT Dir, %[5]s AS Counterparty, R, n, toString(raw) AS Raw, n_min, toString(raw_min) AS Raw_Above_Min, n_dust,
+	early := "toUInt256(0)"
+	if !in.FirstIn.IsZero() {
+		early = fmt.Sprintf("sumIf(Transfer_Amount, Block_Time <= toDateTime('%s', 'UTC') + INTERVAL %d DAY)",
+			in.FirstIn.UTC().Format(time.DateTime), in.EarlyDays)
+	}
+	return fmt.Sprintf(`SELECT Dir, %[1]s AS Counterparty, R, n, toString(raw) AS Raw, n_min, toString(raw_min) AS Raw_Above_Min, n_dust,
   toString(raw_max) AS Raw_Max, toString(raw_early) AS Raw_Early, n_native_dust, n_native_above, Imitations,
-  First, Last, Tx_Above_Dust, Tx, toString(first_in) AS First_Receipt,
+  First, Last, Tx_Above_Dust, Tx,
   count() OVER (PARTITION BY Dir, R) AS Dir_Counterparties,
   sum(n) OVER (PARTITION BY Dir, R) AS Dir_Transfers,
   toString(sum(raw) OVER (PARTITION BY Dir, R)) AS Dir_Raw,
   toString(sum(raw_min) OVER (PARTITION BY Dir, R)) AS Dir_Raw_Above_Min
 FROM (
-%[6]s
+%[2]s
   UNION ALL
-%[7]s
+%[3]s
 )
 ORDER BY Dir, R DESC, if(R = 1, raw, toUInt256(n)) DESC, C
-LIMIT %[8]d BY Dir, R
-%[9]s
-FORMAT JSON`, tronReceiver, tronRaw(in.Addr), asset, win, tronB58("C"),
+LIMIT %[4]d BY Dir, R
+%[5]s
+FORMAT JSON`, tronB58("C"),
 		side("in", tronReceiver, "Transfer_Receiver", "Transfer_Sender", "toUInt256(0)"),
 		side("out", tronSender, "Transfer_Sender", "Transfer_Receiver", early),
 		in.Limit, settings(in.MaxRows, 4*in.Limit+10, in.MaxSecs))
@@ -267,16 +304,17 @@ func tronSet(list string) string {
 
 // hopSide is one transfer table, seen from the addresses of the set.
 type hopSide struct {
-	Name  string // statement name in the cost detail
-	Table string
-	Self  string // the set's column
-	Peer  string
-	In    bool // the set's addresses receive
+	Name   string // statement name in the cost detail
+	Table  string
+	Header string // the table as the X-Bitquery-Table header names it
+	Self   string // the set's column
+	Peer   string
+	In     bool // the set's addresses receive
 }
 
 var (
-	receiptsSide = hopSide{Name: "receipts", Table: tronReceiver, Self: "Transfer_Receiver", Peer: "Transfer_Sender", In: true}
-	sendsSide    = hopSide{Name: "sends", Table: tronSender, Self: "Transfer_Sender", Peer: "Transfer_Receiver"}
+	receiptsSide = hopSide{Name: "receipts", Table: tronReceiver, Header: headerReceiver, Self: "Transfer_Receiver", Peer: "Transfer_Sender", In: true}
+	sendsSide    = hopSide{Name: "sends", Table: tronSender, Header: headerSender, Self: "Transfer_Sender", Peer: "Transfer_Receiver"}
 )
 
 // explainStatement asks for the primary-key granules one address occupies on
@@ -294,13 +332,14 @@ SETTINGS max_execution_time = %[4]d, %[5]s
 FORMAT JSON`, side.Self, side.Table, tronRaw(addr), maxSeconds, stopSettings), nil
 }
 
-// unbounded is the bound of an address whose whole history is read.
+// unbounded is the bound of an address whose whole history is read (up to the
+// report's pin).
 const unbounded = uint32(4294967295)
 
 // historyStatement reads the report asset's transfers of a set of addresses on
 // one table, each address up to its own bound (Block_Time <= bound, in unix
-// seconds), in chain order.
-func historyStatement(side hopSide, addrs []string, bounds []uint32, asset tronAsset, maxRows int64, maxResult int, maxSeconds int) (string, error) {
+// seconds) and every one strictly before the report's pin, in chain order.
+func historyStatement(side hopSide, addrs []string, bounds []uint32, asset tronAsset, pin time.Time, maxRows int64, maxResult int, maxSeconds int) (string, error) {
 	list, err := quoteAddrs(addrs)
 	if err != nil {
 		return "", err
@@ -314,9 +353,9 @@ func historyStatement(side hopSide, addrs []string, bounds []uint32, asset tronA
 		b[i] = fmt.Sprintf("%d", x)
 		top = max(top, x)
 	}
-	prune := ""
+	prune := pinCond(pin)
 	if top != unbounded {
-		prune = fmt.Sprintf(" AND Block_Time <= toDateTime(%d, 'UTC')", top)
+		prune += fmt.Sprintf(" AND Block_Time <= toDateTime(%d, 'UTC')", top)
 	}
 	return fmt.Sprintf(`WITH %[1]s AS set_f,
   arrayMap(x -> toFixedString(substring(base58Decode(x), 2, 20), 20), %[2]s) AS keys_f,

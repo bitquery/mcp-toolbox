@@ -83,15 +83,16 @@ const resultSlack = 100
 // readSet reads one table's history of a set of addresses. Its row budget is
 // perAddress per address and its result cap hub_transfers per address, so a
 // set holding a hub is refused (before reading, for the row budget); overflow
-// reports that refusal, which the caller resolves with EXPLAINs.
-func (e *executor) readSet(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset) ([]histRow, bool, error) {
+// reports that refusal, which the caller resolves with EXPLAINs. pin is the
+// report's upper bound (request.w.Before): no row at or after it is read.
+func (e *executor) readSet(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset, pin time.Time) ([]histRow, bool, error) {
 	left, err := e.maxRows()
 	if err != nil {
 		return nil, false, err
 	}
 	budget := e.perAddress() * int64(len(addrs))
 	maxResult := e.th.HubTransfers*len(addrs) + resultSlack
-	rows, err := e.history(ctx, side, addrs, bounds, asset, min(left, budget), maxResult)
+	rows, err := e.history(ctx, side, addrs, bounds, asset, pin, min(left, budget), maxResult)
 	if err != nil {
 		// A refusal for size within the set's own budget is the set's; within
 		// the report's remaining budget it is the report's.
@@ -117,7 +118,7 @@ func (e *executor) granules(ctx context.Context, side hopSide, addr string) (int
 	if err != nil {
 		return 0, false, err
 	}
-	rows, err := e.query(ctx, "explain_"+side.Name, side.Table, stmt)
+	rows, err := e.query(ctx, "explain_"+side.Name, side.Header, stmt)
 	if err != nil {
 		return 0, false, err
 	}
@@ -166,13 +167,13 @@ type histRow struct {
 }
 
 // history reads the report asset's transfers of the addresses on one table,
-// each up to its bound.
-func (e *executor) history(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset, maxRows int64, maxResult int) ([]histRow, error) {
-	stmt, err := historyStatement(side, addrs, bounds, asset, maxRows, maxResult, e.secs(ctx))
+// each up to its bound and all of them before the pin.
+func (e *executor) history(ctx context.Context, side hopSide, addrs []string, bounds []uint32, asset tronAsset, pin time.Time, maxRows int64, maxResult int) ([]histRow, error) {
+	stmt, err := historyStatement(side, addrs, bounds, asset, pin, maxRows, maxResult, e.secs(ctx))
 	if err != nil {
 		return nil, err
 	}
-	rows, err := e.query(ctx, "history_"+side.Name, side.Table, stmt)
+	rows, err := e.query(ctx, "history_"+side.Name, side.Header, stmt)
 	if err != nil {
 		return nil, err
 	}
@@ -195,8 +196,9 @@ func (e *executor) history(ctx context.Context, side hopSide, addrs []string, bo
 		if err != nil {
 			return nil, fmt.Errorf("history integrity: a transfer without a time")
 		}
-		if bound != unbounded && t.Unix() > int64(bound) {
-			// The statement bounds every address; a row past it is not used.
+		if (bound != unbounded && t.Unix() > int64(bound)) || (!pin.IsZero() && !t.Before(pin)) {
+			// The statement bounds every address and the pin; a row past
+			// either is not used.
 			continue
 		}
 		raw, ok := new(big.Int).SetString(strings.TrimSpace(asStr(r["Raw"])), 10)
