@@ -256,6 +256,11 @@ var (
 	// host:port — replicas listen on more than the default ports (":9001" seen live),
 	// so any port; a message puts a space after its own colons ("maximum: 1000").
 	bqHostPortRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*:\d{2,5}\b`)
+	// A bare node name, with no port and no known domain: "… since replica
+	// streaming-processor-trading-5 lost its session …". Only the cluster's own
+	// naming schemes, as whole words: a table name (ch_…), a word that merely
+	// contains "ch-" (search-, batch-) and capitalized text stay.
+	bqNodeNameRe = regexp.MustCompile(`\b(?:streaming-processor-|chapi|chstrm|ch-)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\b`)
 	// Server file-system and replication paths.
 	bqServerPathRe = regexp.MustCompile(`(^|[\s'"(=,\[])/(?:var|etc|usr|opt|home|tmp|data|mnt|srv|root|clickhouse|proc|run)/[^\s'",;)\]]*`)
 	bqSecretRe     = regexp.MustCompile(`(?i)\b(password|passwd|token|access_token|api_key|apikey|key)=[^&\s"',;()]*[^&\s"',;().]`)
@@ -458,6 +463,7 @@ func bitqueryScrubServerDetail(text string) string {
 	text = bqInternalFQDN.ReplaceAllString(text, "[address]")
 	text = bqIPv4Re.ReplaceAllString(text, "[address]")
 	text = bqHostPortRe.ReplaceAllString(text, "[address]")
+	text = bqNodeNameRe.ReplaceAllString(text, "[address]")
 	return bitqueryMaskSecrets(text)
 }
 

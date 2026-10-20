@@ -71,7 +71,7 @@ const (
 	bqOld516       = "Code: 516, e.displayText() = DB::Exception: no_such_user_errredact: Authentication failed: password is incorrect or there is no user with such name (version 20.8.11.17 (official build))\n"
 )
 
-var bqLeakRe = regexp.MustCompile(`(?i)version|official build|\.local\b|received from|while executing|e\.displayText|__exception__|\[HTTP|sendQuery|response body: "|:9000|chnode|dc426|no_such_user|s3cr3t|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|for user ["'\x60]?(?:mcp|guest|default|svc|someone)|user ["'\x60](?:mcp|someone)|user=mcp`)
+var bqLeakRe = regexp.MustCompile(`(?i)version|official build|\.local\b|received from|while executing|e\.displayText|__exception__|\[HTTP|sendQuery|response body: "|:9000|chnode|dc426|streaming-processor-|chapi\d|chstrm\d|\bch-[a-z0-9]|no_such_user|s3cr3t|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|for user ["'\x60]?(?:mcp|guest|default|svc|someone)|user ["'\x60](?:mcp|someone)|user=mcp`)
 
 func bqAssertClean(t *testing.T, text string) {
 	t.Helper()
@@ -250,6 +250,17 @@ func TestBitqueryCleanDatabaseMessage(t *testing.T) {
 		{desc: "a URL user before a sentence period keeps the period (synthesized)", code: 36, name: "BAD_ARGUMENTS",
 			in:   "Code: 36. DB::Exception: Bad URL http://example.com/?user=mcp. (BAD_ARGUMENTS) (version 25.9.4.58 (official build))",
 			want: "Code: 36. DB::Exception: Bad URL http://example.com/?user=[user]. (BAD_ARGUMENTS)"},
+		// A bare node name, with no domain and no port (synthesized; the first is the
+		// wording of a replica that lost its coordination session).
+		{desc: "a bare replica name (synthesized)", code: 242, name: "TABLE_IS_READ_ONLY",
+			in:   "Code: 242. DB::Exception: Table is in readonly mode since replica streaming-processor-trading-5 lost its session with ZooKeeper. (TABLE_IS_READ_ONLY) (version 25.9.4.58 (official build))",
+			want: "Code: 242. DB::Exception: Table is in readonly mode since replica [address] lost its session with ZooKeeper. (TABLE_IS_READ_ONLY)"},
+		{desc: "bare node names of the other schemes (synthesized)", code: 279, name: "ALL_CONNECTION_TRIES_FAILED",
+			in:   "Code: 279. DB::NetException: All connection tries failed: chapi8 refused, chstrm12 timed out, ch-btc1 and ch-btc1.dc426 unreachable. (ALL_CONNECTION_TRIES_FAILED) (version 25.9.4.58 (official build))",
+			want: "Code: 279. DB::NetException: All connection tries failed: [address] refused, [address] timed out, [address] and [address] unreachable. (ALL_CONNECTION_TRIES_FAILED)"},
+		{desc: "a bare node name at the end of a sentence (synthesized)", code: 210, name: "NETWORK_ERROR",
+			in:   "Code: 210. DB::NetException: Connection refused by ch-zcash-2. (NETWORK_ERROR) (version 25.9.4.58 (official build))",
+			want: "Code: 210. DB::NetException: Connection refused by [address]. (NETWORK_ERROR)"},
 		{desc: "the per-user memory limit names no user (synthesized)", code: 241, name: "MEMORY_LIMIT_EXCEEDED",
 			in:   "Code: 241. DB::Exception: Memory limit (for user) exceeded: would use 9.31 GiB (attempt to allocate chunk of 4219648 bytes), maximum: 9.31 GiB. (MEMORY_LIMIT_EXCEEDED) (version 25.9.4.58 (official build))",
 			want: "Code: 241. DB::Exception: Memory limit (for user) exceeded: would use 9.31 GiB (attempt to allocate chunk of 4219648 bytes), maximum: 9.31 GiB. (MEMORY_LIMIT_EXCEEDED)"},
@@ -294,6 +305,10 @@ func TestBitqueryCleanDatabaseMessageLeavesOtherText(t *testing.T) {
 		"CREATE USER 'alice' IDENTIFIED BY 'x'",
 		"Too many simultaneous queries for User alice. Current: 4, maximum: 4",
 		"select count() from system.processes group by user order by count() desc",
+		// Words and names that only look like the node naming schemes.
+		"Table ch_trading.transfers_ch_1 has no column chapi_id or chstrm_rt",
+		"search-columns, batch-size, a much-needed fetch-all, which-ever",
+		"Chapter 1: the chapter on the streaming-processor design, ch- and CH-1",
 	} {
 		if got, _, _, changed := BitqueryCleanDatabaseMessage(in); changed || got != strings.TrimSpace(in) {
 			t.Errorf("BitqueryCleanDatabaseMessage(%q) = %q, changed=%v", in, got, changed)
