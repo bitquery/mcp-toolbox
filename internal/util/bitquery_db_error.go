@@ -132,6 +132,71 @@ func BitqueryDatabaseErrorInResult(ctx context.Context, sourceName string, rows 
 	return dbErr
 }
 
+// BitqueryTextResult checks a successful database answer that came back as text
+// rather than rows: a text output format, a body cut short, or a body ending in
+// an exception the result decoder did not recognize.
+//
+// Text that ends in a ClickHouse exception (see bitqueryTrailingException) is a
+// failed query: the result is a *BitqueryDatabaseError ("query failed: <cleaned
+// message>"; whatever rows came before it are dropped), and the exception as the
+// server wrote it is logged.
+//
+// Any other text is data (nil), exception text inside it included: a raw
+// statement over system.query_log returns such text in a column. It is handed to
+// the caller byte for byte.
+func BitqueryTextResult(ctx context.Context, sourceName, text string) error {
+	exception, ok := bitqueryTrailingException(text)
+	if !ok {
+		return nil
+	}
+	clean, code, name, _ := BitqueryCleanDatabaseMessage(exception)
+	original := fmt.Errorf("query failed, the answer was %d bytes of text ending in: %s", len(text), exception)
+	dbErr := &BitqueryDatabaseError{msg: "query failed: " + clean, message: clean, code: code, name: name, cause: original}
+	bitqueryLogDatabaseError(ctx, sourceName, dbErr, original.Error())
+	return dbErr
+}
+
+// bitqueryTrailingException returns the ClickHouse exception a text body ends in,
+// in one of the shapes a server appends after the rows it has sent:
+//
+//   - the {"exception": "…"} object on the last line, before the closing bracket
+//     of the array form (the server writes a space after the colon, its row writer
+//     never does);
+//   - an exception written as text: a line starting "Code: N. DB::Exception" (or
+//     the 20.8 "Code: N, e.displayText() = DB::Exception"), the last such line in
+//     the body, running from there to the end and ending the way a server ends
+//     one — the code name, the version, or the marker closing the tagged block.
+//
+// Exception text anywhere else is data: inside a row, in a column before others,
+// or on a line the body goes on after.
+func bitqueryTrailingException(text string) (string, bool) {
+	body := strings.TrimRight(text, " \t\r\n")
+	if strings.HasSuffix(body, "]") && bitqueryFirstLine(body) == "[" {
+		body = strings.TrimRight(body[:len(body)-1], " \t\r\n")
+	}
+	if last := strings.TrimSpace(body[strings.LastIndexByte(body, '\n')+1:]); strings.HasPrefix(last, `{"exception": "`) {
+		return bitqueryJSONException(last)
+	}
+	starts := bqExceptionLineRe.FindAllStringIndex(body, -1)
+	if len(starts) == 0 {
+		return "", false
+	}
+	block := body[starts[len(starts)-1][0]:]
+	if !bqExceptionEndRe.MatchString(block) {
+		return "", false
+	}
+	return block, true
+}
+
+// bitqueryFirstLine is the first line of text that holds more than whitespace.
+func bitqueryFirstLine(text string) string {
+	text = strings.TrimLeft(text, " \t\r\n")
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	return strings.TrimSpace(text)
+}
+
 func bitqueryLogDatabaseError(ctx context.Context, sourceName string, dbErr *BitqueryDatabaseError, original string) {
 	logger, err := LoggerFromContext(ctx)
 	if err != nil {
@@ -139,10 +204,12 @@ func bitqueryLogDatabaseError(ctx context.Context, sourceName string, dbErr *Bit
 	}
 	// WARN, not ERROR: most of these are the database refusing a caller's query
 	// (bad SQL, a guard, a limit), not a server fault.
+	// Both texts are capped: a throwIf message is the caller's and can be as long as
+	// a statement may be.
 	logger.WarnContext(ctx, "data source query error",
 		"source", sourceName,
 		"code", dbErr.code,
-		"reported", dbErr.msg,
+		"reported", bitqueryTruncateForLog(dbErr.msg, bitqueryDatabaseLogLimit),
 		"error", bitqueryTruncateForLog(bitqueryMaskSecrets(original), bitqueryDatabaseLogLimit))
 }
 
@@ -174,6 +241,11 @@ var (
 	bqExceptionHeadRe    = regexp.MustCompile(`^(?:DB::\w*Exception: )+`)
 	bqUserPrefixRe       = regexp.MustCompile(`^[A-Za-z0-9_.@-]+: `)
 	bqExceptionTagLineRe = regexp.MustCompile(`\s*\n\d+ \S{16}\s*$`)
+	// A line starting an exception a server wrote as text after the rows it sent.
+	bqExceptionLineRe = regexp.MustCompile(`(?m)^Code: \d+(?:\.|, e\.(?:displayText|what)\(\) =) DB::\w*Exception\b`)
+	// How a server ends an exception: its code name, its version, or the
+	// "__exception__" marker closing the tagged block current servers write.
+	bqExceptionEndRe = regexp.MustCompile(`(?:\([A-Z][A-Z0-9_]*\)|\(version [^()]*(?:\([^()]*\)[^()]*)*\)|\n__exception__)\s*$`)
 
 	// A proxy's request scope: "[ Id: …; User … to "host:port"(1); RemoteAddr: …]: ".
 	bqProxyScopeRe = regexp.MustCompile(`\[ ?Id: [^\]]*\]:? ?`)

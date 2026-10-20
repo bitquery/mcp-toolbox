@@ -47,10 +47,6 @@ import (
 	"strings"
 )
 
-// clickHouseExceptionTail is how far back from the end of a body the exception
-// is looked for; the messages are much shorter.
-const clickHouseExceptionTail = 16 << 10
-
 // clickHouseJSONExceptionPrefix starts the exception object ClickHouse writes in
 // JSON output formats.
 const clickHouseJSONExceptionPrefix = `{"exception": "`
@@ -80,26 +76,24 @@ func isJSONLineFormat(format string) bool {
 }
 
 // trailingClickHouseException reports the exception a ClickHouse server appended
-// to a successful response body, if there is one. It looks at the lines of the
-// last clickHouseExceptionTail bytes, from the end back to the last row.
+// to a successful response body, if there is one. It looks at the lines from the
+// end of the body back to the last row. The body is in memory already and the
+// scan stops at that row, so a message of any length is read whole: the caller
+// writes a throwIf message, and one longer than a fixed look-back window (16 KiB
+// up to 964ba806) used to pass as data.
 func trailingClickHouseException(body []byte, header http.Header) (streamException, bool) {
 	if !isJSONLineFormat(header.Get(clickHouseFormatHeader)) {
 		return streamException{}, false
 	}
 	body = bytes.TrimRight(body, " \t\r\n")
 	array := isArrayOfRows(body)
-	floor := max(0, len(body)-clickHouseExceptionTail)
 
 	start := -1
 	found := streamException{rows: -1}
 	last := true // only blank lines and the closing bracket follow this line
 scan:
-	for end := len(body); end > floor; {
-		lineStart := bytes.LastIndexByte(body[floor:end], '\n') + 1
-		if lineStart == 0 && floor > 0 {
-			break // the line starts before the tail
-		}
-		lineStart += floor
+	for end := len(body); end > 0; {
+		lineStart := bytes.LastIndexByte(body[:end], '\n') + 1
 		line := bytes.TrimSpace(body[lineStart:end])
 		end = lineStart - 1
 
@@ -129,7 +123,7 @@ scan:
 		return streamException{}, false
 	}
 	if found.rows < 0 {
-		found.rows = lineCount(body[:start]) // no row inside the tail
+		found.rows = lineCount(body[:start]) // no row before it
 	}
 	if array && found.rows > 0 {
 		found.rows-- // the opening bracket
@@ -166,4 +160,18 @@ func clickHouseJSONException(line []byte) (string, bool) {
 		return "", false
 	}
 	return message, true
+}
+
+// endsInClickHouseJSONException reports whether the last line of a body, before
+// the closing bracket of the array form, is the {"exception": "…"} object. It
+// reads no header, so the result decoder can refuse such a body as rows even when
+// a proxy dropped X-ClickHouse-Format and trailingClickHouseException did not run.
+func endsInClickHouseJSONException(body []byte) bool {
+	body = bytes.TrimRight(body, " \t\r\n")
+	if bytes.HasSuffix(body, []byte("]")) && isArrayOfRows(body) {
+		body = bytes.TrimRight(body[:len(body)-1], " \t\r\n")
+	}
+	line := bytes.TrimSpace(body[bytes.LastIndexByte(body, '\n')+1:])
+	_, ok := clickHouseJSONException(line)
+	return ok
 }

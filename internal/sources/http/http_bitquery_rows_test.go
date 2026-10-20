@@ -39,6 +39,8 @@ func row(k string, v any) map[string]any { return map[string]any{k: v} }
 
 const chException = "Code: 395, e.displayText() = DB::Exception: Value passed to 'throwIf' function is non zero (version 20.8.11.17 (official build))\n"
 
+const chExceptionObject = `{"exception": "Code: 395. DB::Exception: boom: while executing 'FUNCTION throwIf(1 :: 0, 'boom' :: 1) -> throwIf(1, 'boom') UInt8 : 2'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 25.9.4.58 (official build))"}`
+
 func TestDecodeResponseBody(t *testing.T) {
 	tcs := []struct {
 		name   string
@@ -87,6 +89,15 @@ func TestDecodeResponseBody(t *testing.T) {
 		{name: "truncated last row", body: "{\"n\":1}\n{\"n\":2", format: "JSONEachRow", want: "{\"n\":1}\n{\"n\":2"},
 		{name: "exception after rows", body: "{\"n\":1}\n{\"n\":2}\n" + chException, format: "JSONEachRow", want: "{\"n\":1}\n{\"n\":2}\n" + chException},
 		{name: "exception after one row", body: "{\"n\":1}\n" + chException, format: "JSONEachRow", want: "{\"n\":1}\n" + chException},
+		// The exception object current servers write after the rows they sent: never
+		// a row, whatever the headers say (the caller cleans the text).
+		{name: "exception object after rows", body: "{\"n\":1}\n{\"n\":2}\n" + chExceptionObject + "\n", format: "JSONEachRow", want: "{\"n\":1}\n{\"n\":2}\n" + chExceptionObject + "\n"},
+		{name: "exception object after rows without header", body: "{\"n\":1}\n" + chExceptionObject + "\n", want: "{\"n\":1}\n" + chExceptionObject + "\n"},
+		{name: "exception object closing the array form", body: "[\n{\"n\":1},\n" + chExceptionObject + "\n]\n", format: "JSONEachRow", want: "[\n{\"n\":1},\n" + chExceptionObject + "\n]\n"},
+		{name: "exception object alone", body: chExceptionObject + "\n", want: chExceptionObject + "\n"},
+		{name: "column named exception stays a row", body: "{\"n\":1}\n{\"exception\":\"Code: 395. DB::Exception: boom\"}\n", format: "JSONEachRow", want: []any{row("n", 1.0), row("exception", "Code: 395. DB::Exception: boom")}},
+		{name: "exception object that is not a ClickHouse message stays a row", body: "{\"n\":1}\n{\"exception\": \"hello\"}\n", want: []any{row("n", 1.0), row("exception", "hello")}},
+		{name: "exception object before the last row stays a row", body: chExceptionObject + "\n{\"n\":1}\n", want: []any{row("exception", "Code: 395. DB::Exception: boom: while executing 'FUNCTION throwIf(1 :: 0, 'boom' :: 1) -> throwIf(1, 'boom') UInt8 : 2'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 25.9.4.58 (official build))"), row("n", 1.0)}},
 		{name: "objects on one line", body: `{"n":1}{"n":2}`, format: "JSONEachRow", want: `{"n":1}{"n":2}`},
 		{name: "objects separated by a space", body: `{"n":1} {"n":2}`, want: `{"n":1} {"n":2}`},
 		{name: "arrays per line", body: "[0,\"a\"]\n[1,\"b\"]\n", format: "JSONCompactEachRow", want: "[0,\"a\"]\n[1,\"b\"]\n"},

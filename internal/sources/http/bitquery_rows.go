@@ -57,15 +57,22 @@ func isJSONRowStreamFormat(format string) bool {
 //   - Everything else (plain text, HTML, a stream with a broken line or a
 //     trailing ClickHouse exception, values that are not objects, several
 //     values on one line) is returned as the raw string, as before.
+//   - A body whose last line is ClickHouse's {"exception": "…"} object is the raw
+//     string too, never rows, whatever the headers say: a query that failed
+//     after its first rows went out.
 //
 // RunRequest turns a body that ends in a recognized ClickHouse exception into an
-// error before it gets here (see trailingClickHouseException).
+// error before it gets here (see trailingClickHouseException), and checks a
+// string result of a ClickHouse server (see isClickHouseAnswer).
 func decodeResponseBody(body []byte, header http.Header) any {
 	rowStream := isJSONRowStreamFormat(header.Get(clickHouseFormatHeader))
 
 	// One JSON document: the common case, and the only one with no extra work.
 	var data any
 	if err := json.Unmarshal(body, &data); err == nil {
+		if endsInClickHouseJSONException(body) {
+			return string(body)
+		}
 		if _, isRow := data.(map[string]any); isRow && rowStream {
 			return []any{data}
 		}
@@ -90,7 +97,8 @@ func decodeResponseBody(body []byte, header http.Header) any {
 // reports false for anything else, including a stream that breaks part way:
 // ClickHouse appends its exception text to a 200 answer once rows have been
 // sent, and handing back the rows before it would hide that the result is
-// incomplete.
+// incomplete. For the same reason it reports false when the last object is the
+// {"exception": "…"} object current servers write there in JSON formats.
 //
 // The decoder reads from the body already in memory and keeps about one row in
 // its buffer at a time, so the extra memory is bounded by the largest row.
@@ -115,10 +123,28 @@ func decodeObjectLines(body []byte) ([]any, bool) {
 		}
 		rows = append(rows, row)
 	}
-	if len(rows) < 2 {
+	if len(rows) < 2 || endsInClickHouseJSONException(body) {
 		return nil, false
 	}
 	return rows, true
+}
+
+// isClickHouseAnswer reports whether a response came from a ClickHouse server: it
+// carries one of the X-ClickHouse-* headers the server sets on every answer, or
+// the request names a parameter of ClickHouse's HTTP interface (every ClickHouse
+// source in the cfg sets default_format), which still holds when a proxy drops
+// the headers.
+func isClickHouseAnswer(req *http.Request, header http.Header) bool {
+	for name := range header {
+		if len(name) > len("X-ClickHouse-") && strings.EqualFold(name[:len("X-ClickHouse-")], "X-ClickHouse-") {
+			return true
+		}
+	}
+	if req == nil || req.URL == nil {
+		return false
+	}
+	query := req.URL.Query()
+	return query.Has("default_format") || query.Has("wait_end_of_query")
 }
 
 // skipJSONSpace drops leading JSON whitespace (space, tab, CR, LF).

@@ -246,7 +246,18 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 	// Bitquery: a JSON document is returned parsed and anything else as a string,
 	// as upstream does; a newline-delimited row stream (ClickHouse JSONEachRow on
 	// servers without output_format_json_array_of_rows) is returned as rows.
-	return decodeResponseBody(body, resp.Header), nil
+	result := decodeResponseBody(body, resp.Header)
+
+	// Bitquery: a ClickHouse answer that is text is checked before the caller sees
+	// it, should it end in an exception the checks above missed (a proxy that drops
+	// X-ClickHouse-Format, say). One that does is reported as a failed query; other
+	// text is data and comes back byte for byte.
+	if text, ok := result.(string); ok && isClickHouseAnswer(req, resp.Header) {
+		if err := util.BitqueryTextResult(ctx, s.Name, text); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 // bitqueryTimeout is the limit a failed request is reported against: the

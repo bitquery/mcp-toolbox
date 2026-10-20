@@ -45,6 +45,13 @@ const (
 	bqExc25Object = `{"exception": "Code: 395. DB::Exception: boom: while executing 'FUNCTION throwIf(equals(number, 3000) :: 3, 'boom' :: 2) -> throwIf(equals(number, 3000), 'boom') UInt8 : 1'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 25.9.4.58 (official build))"}`
 )
 
+// The same messages with a message longer than 16 KiB (synthesized).
+var (
+	bqExc208Long      = strings.Replace(bqExc208, "boom", strings.Repeat("b", 17000), 1)
+	bqExc25Long       = strings.Replace(bqExc25, "boom", strings.Repeat("b", 17000), 1)
+	bqExc25ObjectLong = strings.Replace(bqExc25Object, "boom", strings.Repeat("b", 17000), 1)
+)
+
 func TestTrailingClickHouseException(t *testing.T) {
 	netErr := "Code: 279. DB::NetException: All connection tries failed. Log: \n\nCode: 210. DB::NetException: Connection refused (chnode3-hdd:9001). (NETWORK_ERROR) (version 25.9.4.58 (official build))\n: While executing Remote. (ALL_CONNECTION_TRIES_FAILED) (version 25.9.4.58 (official build))"
 	limit25 := "Code: 396. DB::Exception: Limit for result exceeded, max rows: 10.00 thousand, current rows: 10.10 thousand. (TOO_MANY_ROWS_OR_BYTES) (version 25.9.4.58 (official build))"
@@ -94,7 +101,13 @@ func TestTrailingClickHouseException(t *testing.T) {
 		{name: "text format", body: "14999\t0\n" + bqExc208 + "\n", format: "TabSeparated"},
 		{name: "no format header", body: bqRows208 + bqExc208 + "\n"},
 		{name: "object format", body: "{\n\"row_1\": {\"n\":1}\n}\n" + bqExc208 + "\n", format: "JSONObjectEachRow"},
-		{name: "exception longer ago than the tail", body: bqExc208 + "\n" + strings.Repeat("x", clickHouseExceptionTail) + "\n", format: "JSONEachRow"},
+
+		// However long the message: the scan goes back to the last row, not over a
+		// fixed tail of the body.
+		{name: "20.8 text longer than 16 KiB after rows", body: bqRows208 + bqExc208Long + "\n", format: "JSONEachRow", found: true, rows: 3, text: bqExc208Long},
+		{name: "25.9 object longer than 16 KiB after rows", body: bqRow25a + "\n" + bqRow25b + "\n" + bqExc25ObjectLong + "\n", format: "JSONEachRow", found: true, rows: 2, text: bqExc25Long},
+		{name: "25.9 object longer than 16 KiB inside the array form", body: "[\n" + bqRow25a + ",\n" + bqRow25b + ",\n" + bqExc25ObjectLong + "\n]\n", format: "JSONEachRow", found: true, rows: 2, text: bqExc25Long},
+		{name: "a continuation line longer than 16 KiB", body: bqExc208 + "\n" + strings.Repeat("x", 17000) + "\n", format: "JSONEachRow", found: true, rows: 0, text: bqExc208 + "\n" + strings.Repeat("x", 17000)},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,13 +233,8 @@ func TestBitqueryRunRequestRowsWithExceptionTextStayRows(t *testing.T) {
 		t.Fatalf("got %#v, %v; want the raw body", got, err)
 	}
 
-	// Without a ClickHouse format header nothing is checked.
-	plain := bqRows208 + bqExc208 + "\n"
-	server = bqStreamServer(t, "", plain)
-	got, err = bitqueryRun(t, ctx, bitqueryTestSource(t, ctx, server.URL, "5s"), server.URL+bitqueryTestQuery)
-	if err != nil || got != plain {
-		t.Fatalf("got %#v, %v; want the raw body", got, err)
-	}
+	// Without a ClickHouse format header the detector does not run; such a body
+	// is covered in http_bitquery_long_exception_test.go.
 
 	if strings.Contains(logs.String(), "data source query error") {
 		t.Fatalf("unexpected query error log: %q", logs.String())
