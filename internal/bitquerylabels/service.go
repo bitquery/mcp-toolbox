@@ -59,8 +59,8 @@ type Config struct {
 	Service string `yaml:"service"`
 	// Host is a static "host:port" that bypasses SRV resolution (dev/testing).
 	Host string `yaml:"host"`
-	// TimeoutSec bounds one refresh (SRV resolution plus every endpoint attempt).
-	// Default 5s.
+	// TimeoutSec bounds one refresh (SRV resolution plus every endpoint attempt),
+	// and the pre-process hook's whole tool call, which may make several. Default 5s.
 	TimeoutSec float64 `yaml:"timeoutSec"`
 	// SrvTtlSec is how long a resolved SRV result is cached. Default 60s.
 	SrvTtlSec int `yaml:"srvTtlSec"`

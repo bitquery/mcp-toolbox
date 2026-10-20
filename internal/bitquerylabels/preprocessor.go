@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // HookSource is implemented by a source that may carry the labels pre-process
@@ -82,10 +83,14 @@ type Preprocessor struct {
 	client        Client
 	addressParams []string
 	chainParam    string
+	// timeout bounds one tool call: every lookup it makes. 0 = no bound beyond
+	// what the client sets per lookup.
+	timeout time.Duration
 }
 
 // NewPreprocessor builds a hook around a client. Empty addressParams/chainParam
-// fall back to the defaults (address, addresses / chain).
+// fall back to the defaults (address, addresses / chain). Around the HTTP
+// Service, the service's timeout also bounds the whole call.
 func NewPreprocessor(client Client, addressParams []string, chainParam string) *Preprocessor {
 	if len(addressParams) == 0 {
 		addressParams = defaultAddressParams
@@ -93,7 +98,11 @@ func NewPreprocessor(client Client, addressParams []string, chainParam string) *
 	if strings.TrimSpace(chainParam) == "" {
 		chainParam = defaultChainParam
 	}
-	return &Preprocessor{client: client, addressParams: addressParams, chainParam: chainParam}
+	p := &Preprocessor{client: client, addressParams: addressParams, chainParam: chainParam}
+	if svc, ok := client.(*Service); ok && svc != nil {
+		p.timeout = svc.timeout
+	}
+	return p
 }
 
 // New builds the hook for a source from its `bitqueryLabelsQueryService` block.
@@ -123,6 +132,11 @@ func New(ctx context.Context, sourceName string, cfg *Config) (*Preprocessor, er
 // Preprocess runs the hook for one tool call. It is safe on a nil receiver and
 // never fails: a tool whose parameters name no address makes no call, and every
 // service error is swallowed by the client.
+//
+// The timeout is a budget for the call, not for each lookup: with no chain the
+// addresses become up to four lookups, and a service that accepts and never
+// answers would otherwise hold the tool for four times the configured value. The
+// lookups left when the budget is spent are skipped.
 func (p *Preprocessor) Preprocess(ctx context.Context, params map[string]any) {
 	if p == nil || p.client == nil {
 		return
@@ -141,7 +155,19 @@ func (p *Preprocessor) Preprocess(ctx context.Context, params map[string]any) {
 		logger.DebugContext(ctx, "labels preprocessor: refreshing addresses before ClickHouse read",
 			"addresses", len(addresses), "chainFilters", chainFilters, "requests", len(requests))
 	}
-	for _, req := range requests {
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+	for i, req := range requests {
+		if ctx.Err() != nil {
+			if logger := loggerFrom(ctx); logger != nil {
+				logger.WarnContext(ctx, "labels-query-service: no time left in the call, remaining lookups skipped",
+					"skipped", len(requests)-i, "requests", len(requests), "timeout", p.timeout.String(), "err", ctx.Err().Error())
+			}
+			return
+		}
 		p.client.Refresh(ctx, req)
 	}
 }
