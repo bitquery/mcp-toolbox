@@ -39,6 +39,11 @@ const (
 	tronReceiver = "tron_api.transfers_receiver"
 )
 
+// tronPrefixSkip is the fixed network prefix of a Tron base58 address: every
+// one starts with the same 'T', which is not a resemblance, so the look-alike
+// rule counts matching leading characters only after it.
+const tronPrefixSkip = 1
+
 // The X-Bitquery-Table header names the table a statement reads, bare, as the
 // configured http tools send it. A statement that reads both tables carries
 // the sender table, as the configured two-table tools do.
@@ -179,6 +184,33 @@ LIMIT 200
 %[2]s
 FORMAT JSON`, tronRaw(addr), settings(maxRows, 1000, maxSeconds), "if(length(SC) = 20, "+tronB58("SC")+", '')", inWin, tronReceiver, tronSender,
 		pinCond(w.Before))
+}
+
+// priceKey is the report asset's key text in the chain's price store: native
+// TRX is '0', a TRC-10 asset its numeric id, a TRC-20 token its base58
+// contract. Every form is a value already validated on the asset (an address or
+// a decimal id), so it is written as a literal.
+func priceKey(a tronAsset) string {
+	switch {
+	case a.Native:
+		return "0"
+	case a.Contract != "":
+		return a.Contract
+	default:
+		return a.TRC10
+	}
+}
+
+// priceStatement reads the report asset's USD price from the chain's price
+// store at the report's pin, the way price_at reads it: the range-keyed
+// dictionary is looked up by cityHash64 of the asset's key text with the pin as
+// the range value. dictGetOrNull returns NULL when the asset has no price then,
+// which the report reads as "no price" (never as 0). The X-Bitquery-Table
+// header names no transfer table here; the statement reads only the dictionary.
+func priceStatement(asset tronAsset, pin time.Time, maxRows int64, maxSeconds int) string {
+	return fmt.Sprintf(`SELECT toString(dictGetOrNull('marketdata.prices_tron_dict', 'Price_Amount', cityHash64('%s'), toDateTime('%s', 'UTC'))) AS Price
+%s
+FORMAT JSON`, priceKey(asset), pin.UTC().Format(time.DateTime), settings(maxRows, 1, maxSeconds))
 }
 
 // cpInput holds the numbers written into the counterparty statement.

@@ -19,6 +19,7 @@ package riskreport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/googleapis/mcp-toolbox/internal/tools"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
 
@@ -89,8 +91,12 @@ type scoreOut struct {
 }
 
 type connectionOut struct {
-	Entity           string   `json:"entity"`
-	EntityType       string   `json:"entity_type"`
+	Entity     string `json:"entity"`
+	EntityType string `json:"entity_type"`
+	// SameEntity is set when this connection names the target's own entity
+	// (its entity equals summary.labels.owner): a self-transfer. It is kept in
+	// the output and the breakdown for transparency but left out of the score.
+	SameEntity       bool     `json:"same_entity,omitempty"`
 	Subtype          string   `json:"subtype,omitempty"`
 	Licence          string   `json:"licence,omitempty"`
 	Received         string   `json:"received"`
@@ -191,7 +197,22 @@ type paramsOut struct {
 	GeneratedAt string `json:"generated_at"`
 }
 
+// reportHead is a compact leading summary: the few fields a reader (or a
+// truncated json answer) needs first. They are duplicated from score and
+// params, which stay the authoritative locations.
+type reportHead struct {
+	Score          float64           `json:"score"`
+	DataAsOf       string            `json:"data_as_of"`
+	Complete       bool              `json:"complete"`
+	View           string            `json:"view"`
+	MaxHopsReached int               `json:"max_hops_reached"`
+	FlagsStatus    map[string]string `json:"flags_status"`
+}
+
 type reportOut struct {
+	// AtAGlance leads the object so a truncated json answer still shows the key
+	// facts; it is populated last, from the finished report.
+	AtAGlance   reportHead      `json:"at_a_glance"`
 	Exposure    string          `json:"exposure,omitempty"`
 	Summary     summaryOut      `json:"summary"`
 	Score       scoreOut        `json:"score"`
@@ -219,6 +240,7 @@ type request struct {
 	assetSet  bool
 	direction string
 	view      string
+	format    string
 	maxHops   int
 	w         window
 	minUSD    float64
@@ -265,11 +287,17 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if r.view != "direct" && r.view != "all" {
 		return r, agentErr("view must be direct or all")
 	}
-	if f := strings.ToLower(str("format")); f != "" && f != "json" {
-		if f == "csv" {
-			return r, agentErr("format csv is not available yet; use format json")
-		}
-		return r, agentErr("format must be json")
+	switch f := strings.ToLower(str("format")); f {
+	case "", "markdown":
+		// markdown is the default: a concise human report, with the whole report
+		// alongside it as structured content.
+		r.format = "markdown"
+	case "json":
+		r.format = "json"
+	case "csv":
+		return r, agentErr("format csv is not available yet; use markdown or json")
+	default:
+		return r, agentErr("format must be markdown or json")
 	}
 	a, set, err := parseTronAsset(str("asset"))
 	if err != nil {
@@ -441,7 +469,22 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	}
 	rep.Cost = ex.cost
 	rep.TimingMS = time.Since(start).Milliseconds()
-	return rep, nil
+	// format json returns the report as the single JSON document, exactly as
+	// before. format markdown (the default) returns a concise human report as the
+	// text content — small enough for a client's response cap — with the whole
+	// report alongside it as structured content for a UI to render.
+	if req.format == "json" {
+		return rep, nil
+	}
+	b, err := json.Marshal(rep)
+	if err != nil {
+		return nil, util.ProcessGeneralError(err)
+	}
+	var structured map[string]any
+	if err := json.Unmarshal(b, &structured); err != nil {
+		return nil, util.ProcessGeneralError(err)
+	}
+	return tools.StructuredResult{Content: []any{markdownReport(rep)}, Structured: structured}, nil
 }
 
 // direct builds the direct view of one Tron address.
@@ -494,13 +537,36 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		}
 		return nil, fmt.Errorf("the address has no transfers in the window")
 	}
+	// The report asset's USD price: the configured constant if there is one
+	// (USDT = 1), else one read from the chain's price store under the pin, the
+	// way price_at reads it. A price lets min_amount_usd and the dust and
+	// look-alike thresholds, and the direct floor, apply in USD; without one none
+	// of them is applied (the native dust fallback aside).
 	price := m.assetUSD["tron"][asset.Key]
+	priceFromStore := false
+	if price <= 0 {
+		p, perr := ex.price(ctx, asset, req.w.Before)
+		if perr != nil {
+			// The deadline or the row budget stops the whole report, as any other
+			// statement does; a store that is merely unavailable must not, so the
+			// report falls back to the no-price path and says so.
+			if classifyLimit(ctx, perr) == stopLimit {
+				return nil, perr
+			}
+			rep.Params.Notes = append(rep.Params.Notes, "a USD price for the report asset could not be read, so min_amount_usd and the dust and look-alike thresholds are not applied to it")
+		} else if p > 0 {
+			price, priceFromStore = p, true
+		}
+	}
 	minRaw := usdRaw(req.minUSD, price, asset.Decimals)
 	dustRaw := usdRaw(th.DustUSD, price, asset.Decimals)
 	capRaw := usdRaw(th.LookalikeAmountCapUSD, price, asset.Decimals)
-	if price > 0 {
+	switch {
+	case price > 0 && priceFromStore:
+		rep.Params.USDConversion = fmt.Sprintf("store: 1 %s = %g USD (as of %s)", asset.Symbol, round(price, 2), rep.Params.DataAsOf)
+	case price > 0:
 		rep.Params.USDConversion = fmt.Sprintf("constant: 1 %s = %g USD", asset.Symbol, price)
-	} else {
+	default:
 		rep.Params.USDConversion = "none: no USD price for this asset, so min_amount_usd and the dust and look-alike thresholds are not applied to it"
 		minRaw, capRaw = new(big.Int), new(big.Int)
 		if asset.Native {
@@ -612,15 +678,32 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	amounts := map[direction]dirAmounts{}
 	attributed := map[direction]*big.Int{}
 	byTypeRaw := map[direction]map[string]*big.Int{}
+	// sameEntityByType is the part of byTypeRaw that reached the target's own
+	// entity. It is subtracted from the score (not the breakdown).
+	sameEntityByType := map[direction]map[string]*big.Int{}
 	conns := map[string]*connectionOut{}
 	var connOrder []string
 	directFloor := 0.0
 	var floorFrom map[string]any
 	unnamed := map[string]*unnamedOut{}
 	sanctionsTypes := th.DirectSanctionsTypes
+	// The target's own entity (set above from its labels): a counterparty that
+	// names it is a self-transfer. same_entity connections are removed from the
+	// direction's total before shares are taken, so the score reflects only the
+	// flow that reached OTHER entities (removing a self leg raises the remaining
+	// connections' shares, by design); they stay in the connections and the
+	// breakdown. An entity is (type, name) — the same word under two types is two
+	// entities (an exchange and a hacker of the same name) — so both must match;
+	// matching the name alone would drop a same-named different-type
+	// counterparty's flow from the score, under-reporting risk.
+	owner, ownerType := rep.Summary.Labels.Owner, rep.Summary.Labels.OwnerType
+	sameEntity := func(at attribution, addr string) bool {
+		return owner != "" && at.Label.Type == ownerType && displayEntity(at, addr) == owner
+	}
 	for _, d := range dirs {
 		attributed[d] = new(big.Int)
 		byTypeRaw[d] = map[string]*big.Int{}
+		sameEntityByType[d] = map[string]*big.Int{}
 	}
 	// addConn attributes an amount that reached an entity at a hop, with the
 	// path's transfers (hop 1 first).
@@ -632,6 +715,13 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		byTypeRaw[d][at.Label.Type].Add(byTypeRaw[d][at.Label.Type], raw)
 
 		name := displayEntity(at, addr)
+		self := sameEntity(at, addr)
+		if self {
+			if sameEntityByType[d][at.Label.Type] == nil {
+				sameEntityByType[d][at.Label.Type] = new(big.Int)
+			}
+			sameEntityByType[d][at.Label.Type].Add(sameEntityByType[d][at.Label.Type], raw)
+		}
 		key := at.Label.Type + "\x00" + name
 		conn, ok := conns[key]
 		if !ok {
@@ -639,7 +729,8 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			if at.SourceClass != "" {
 				class = at.SourceClass
 			}
-			conn = &connectionOut{Entity: name, EntityType: at.Label.Type, Subtype: at.Label.Subtype, LabelValue: at.Label.Row.Value,
+			conn = &connectionOut{Entity: name, EntityType: at.Label.Type, SameEntity: self,
+				Subtype: at.Label.Subtype, LabelValue: at.Label.Row.Value,
 				LabelSource: at.Label.Row.Source, LabelSourceClass: class, LabelRecordedAt: at.Label.Row.RecordedAt,
 				recvRaw: new(big.Int), sentRaw: new(big.Int), Addresses: []string{}, EvidencePath: []string{}}
 			if at.Label.Type == licenceUnknownType {
@@ -720,7 +811,10 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		}
 		aboveDust := c.RawMax != nil && c.RawMax.Cmp(dustRaw) > 0
 		if aboveDust {
-			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor {
+			// A self-transfer (the counterparty names the target's own entity) does
+			// not set the floor, as it is left out of the score.
+			sameEnt := sameEntity(at, c.Address)
+			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && !sameEnt {
 				directFloor = f
 				floorFrom = map[string]any{"counterparty": c.Address, "direction": c.Dir.String(), "entity": displayEntity(at, c.Address),
 					"entity_type": at.Label.Type, "amount": formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers, "evidence_txs": c.TxAboveDust}
@@ -827,7 +921,15 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		da.unattributed, _ = new(big.Float).SetInt(un).Float64()
 		var rows []breakdownRow
 		for typ, v := range byTypeRaw[d] {
-			f, _ := new(big.Float).SetInt(v).Float64()
+			// same_entity amounts are removed from the direction's total before
+			// shares are taken (so the score is that of the flow that reached other
+			// entities; removing a self leg raises the remaining connections'
+			// shares, by design). The breakdown keeps the whole attributed amount.
+			sv := new(big.Int).Set(v)
+			if se := sameEntityByType[d][typ]; se != nil {
+				sv.Sub(sv, se)
+			}
+			f, _ := new(big.Float).SetInt(sv).Float64()
 			da.byType[typ] = f
 			rows = append(rows, breakdownRow{EntityType: typ, Amount: formatUnits(v, asset.Decimals), Pct: round(100*ratio(v, base), 2)})
 		}
@@ -888,17 +990,9 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 
 	// Poisoning.
 	looks := findLookalikes(poisoningInput{Target: req.address, Asset: edges.rows, Other: other.rows, DustRaw: dustRaw, CapRaw: capRaw,
-		MinMatch: th.LookalikeMinSuffix, Decimals: asset.Decimals})
+		MinMatch: th.LookalikeMinSuffix, PrefixSkip: tronPrefixSkip, Decimals: asset.Decimals})
 	if len(looks) > 0 {
-		var ev []string
-		for _, l := range looks {
-			for _, tx := range l.EvidenceTxs {
-				if len(ev) < 50 && !slices.Contains(ev, tx) {
-					ev = append(ev, tx)
-				}
-			}
-		}
-		rep.Flags = append(rep.Flags, flagOut{Type: "poisoning", EvidenceTxs: ev, Detail: map[string]any{"lookalikes": looks, "count": len(looks)}})
+		rep.Flags = append(rep.Flags, poisoningFlag(looks))
 	}
 
 	// Pass-through.
@@ -932,7 +1026,65 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		rep.Params.UnmappedTypes = append(rep.Params.UnmappedTypes, u)
 	}
 	sort.Strings(rep.Params.UnmappedTypes)
+
+	// The leading summary, from the finished report.
+	rep.AtAGlance = reportHead{
+		Score:          rep.Score.Value,
+		DataAsOf:       rep.Params.DataAsOf,
+		Complete:       rep.Params.Complete,
+		View:           rep.Params.View,
+		MaxHopsReached: rep.Params.MaxHopsReached,
+		FlagsStatus:    rep.Params.FlagsStatus,
+	}
 	return rep, nil
+}
+
+// lookalikeListCap bounds the look-alikes carried in the poisoning flag's
+// detail. A poisoned address can have thousands; listing them all buries the
+// report and blows a client's response cap. The largest by transfer count are
+// kept, the rest only counted, and the trimming is on the report object itself
+// so a json report is bounded too.
+const lookalikeListCap = 20
+
+// poisoningEvidenceCap bounds the flag-level evidence_txs. Each kept look-alike
+// still carries its own evidence_txs, so the flag lists a few examples rather
+// than repeating every look-alike's transactions.
+const poisoningEvidenceCap = 5
+
+// poisoningFlag builds the poisoning flag from the look-alikes, keeping the
+// largest lookalikeListCap by transfers and counting the rest
+// (lookalikes_total / lookalikes_omitted, as unnamed_more does).
+func poisoningFlag(looks []lookalike) flagOut {
+	total := len(looks)
+	kept := slices.Clone(looks)
+	sort.SliceStable(kept, func(i, j int) bool {
+		if kept[i].Transfers != kept[j].Transfers {
+			return kept[i].Transfers > kept[j].Transfers
+		}
+		return kept[i].Address < kept[j].Address
+	})
+	omitted := 0
+	if len(kept) > lookalikeListCap {
+		omitted = len(kept) - lookalikeListCap
+		kept = kept[:lookalikeListCap]
+	}
+	var ev []string
+	for _, l := range kept {
+		for _, tx := range l.EvidenceTxs {
+			if len(ev) >= poisoningEvidenceCap {
+				break
+			}
+			if !slices.Contains(ev, tx) {
+				ev = append(ev, tx)
+			}
+		}
+		if len(ev) >= poisoningEvidenceCap {
+			break
+		}
+	}
+	return flagOut{Type: "poisoning", EvidenceTxs: ev, Detail: map[string]any{
+		"lookalikes": kept, "count": total, "lookalikes_total": total, "lookalikes_omitted": omitted,
+	}}
 }
 
 const licenceUnknownType = "Exchange (licence unknown)"

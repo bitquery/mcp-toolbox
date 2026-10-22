@@ -29,8 +29,8 @@ parameters:
     default: direct
   - name: format
     type: string
-    description: json.
-    default: json
+    description: markdown (default, a concise report) or json (the full report object).
+    default: markdown
   - name: after_time
     type: string
     description: Window start, UTC.

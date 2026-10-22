@@ -78,9 +78,16 @@ func commonSuffix(a, b string) int {
 	return n
 }
 
-func commonPrefix(a, b string) int {
+// commonPrefixAfter counts the matching leading characters of a and b after a
+// fixed prefix of skip characters. On a chain whose addresses all begin with
+// the same network prefix (every Tron address starts with 'T'), that prefix is
+// not a resemblance, so it is skipped before counting.
+func commonPrefixAfter(a, b string, skip int) int {
+	if skip < 0 {
+		skip = 0
+	}
 	n := 0
-	for n < len(a) && n < len(b) && a[n] == b[n] {
+	for skip+n < len(a) && skip+n < len(b) && a[skip+n] == b[skip+n] {
 		n++
 	}
 	return n
@@ -94,7 +101,10 @@ type poisoningInput struct {
 	DustRaw  *big.Int // report asset: at or below = dust
 	CapRaw   *big.Int // report asset: a receipt above it makes its sender genuine
 	MinMatch int      // matching last characters
-	Decimals int
+	// PrefixSkip is the chain's fixed network-prefix length, skipped before the
+	// matching first characters are counted (1 on Tron: the leading 'T').
+	PrefixSkip int
+	Decimals   int
 }
 
 // findLookalikes applies the poisoning rule. The genuine counterparties C are
@@ -135,7 +145,7 @@ func findLookalikes(in poisoningInput) []lookalike {
 		var who string
 		bs, bp := 0, 0
 		for _, c := range members {
-			s, p := commonSuffix(x, c), commonPrefix(x, c)
+			s, p := commonSuffix(x, c), commonPrefixAfter(x, c, in.PrefixSkip)
 			if s > bs || (s == bs && p > bp) {
 				who, bs, bp = c, s, p
 			}

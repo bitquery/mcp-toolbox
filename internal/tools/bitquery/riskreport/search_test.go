@@ -1318,7 +1318,15 @@ func TestHostileAssetIdsAreSkipped(t *testing.T) {
 	if _, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target, "asset": "1002000"}), ""); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if len(chain.statements) < 2 || !strings.Contains(chain.statements[1], "Transfer_Currency_AssetId = '1002000'") {
+	// The asset has no constant price, so a price statement precedes the
+	// counterparty one; the filter carries the checked id in whichever statement.
+	hasFilter := false
+	for _, s := range chain.statements {
+		if strings.Contains(s, "Transfer_Currency_AssetId = '1002000'") {
+			hasFilter = true
+		}
+	}
+	if !hasFilter {
 		t.Errorf("the TRC-10 report asset's filter is missing")
 	}
 }

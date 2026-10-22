@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -321,6 +322,34 @@ func (e *executor) assets(ctx context.Context, addr string, w window) (assetsRes
 	return out, nil
 }
 
+// price reads the report asset's USD price from the chain's price store at the
+// pin, as one billed statement counted in the report's cost (named "price"). It
+// returns 0 and no error when the store has no price for the asset, so a miss
+// is never read as 0 USD by the caller. The header names the sender table, as a
+// route the gateway knows; the statement reads only the dictionary.
+func (e *executor) price(ctx context.Context, asset tronAsset, pin time.Time) (float64, error) {
+	maxRows, err := e.maxRows()
+	if err != nil {
+		return 0, err
+	}
+	rows, err := e.query(ctx, "price", headerSender, priceStatement(asset, pin, maxRows, e.secs(ctx)))
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	s := strings.TrimSpace(asStr(rows[0]["Price"]))
+	if s == "" {
+		return 0, nil
+	}
+	f, perr := strconv.ParseFloat(s, 64)
+	if perr != nil || f <= 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+		return 0, nil
+	}
+	return f, nil
+}
+
 // pickAsset returns the report asset: the one asked for, or else the one with
 // the largest USD volume in the window among the assets with a price, or else
 // the one with the most transfers.
@@ -461,6 +490,11 @@ func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) 
 			return nil, err
 		}
 		e.cost.Statements++
+		// A real read of the labels table underlies this, but its rows_read /
+		// bytes_read stay 0: the labels source returns result rows only (through
+		// database/sql), not the statistics block the http chain source exposes,
+		// so the scan stats are dropped at the source boundary and cannot be
+		// captured here without the source surfacing them.
 		e.cost.Detail = append(e.cost.Detail, statementCost{Name: "labels", ElapsedMS: time.Since(start).Milliseconds()})
 		rows, _ := res.([]any)
 		for _, x := range rows {

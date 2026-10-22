@@ -43,6 +43,9 @@ type fakeChain struct {
 	statements           []string
 	urls                 []string
 	headers              []string // X-Bitquery-Table of each statement
+	// price is what the price-store statement returns for the report asset;
+	// "" stands for a NULL (no price).
+	price string
 
 	// lateRaw is a transfer to the target that lands while the report runs,
 	// after the assets statement and before the counterparty statement, at
@@ -188,6 +191,13 @@ func (f *fakeChain) RunRequest(ctx context.Context, req *http.Request) (any, err
 	var rows []map[string]any
 	read := int64(1000)
 	switch {
+	case strings.Contains(s, "dictGetOrNull"):
+		// The price statement returns exactly one row; "" is a NULL price.
+		var p any
+		if f.price != "" {
+			p = f.price
+		}
+		rows = []map[string]any{{"Price": p}}
 	case strings.Contains(s, "GROUP BY Native, SC, AssetId"):
 		rows = f.assets
 	case strings.Contains(s, "AS Dir_Counterparties"):
@@ -272,6 +282,7 @@ func newTestToolWith(t *testing.T, chain *fakeChain, labels *fakeLabels, change 
 			parameters.NewStringParameter("asset", "asset", parameters.WithStringDefault("")),
 			parameters.NewStringParameter("direction", "direction", parameters.WithStringDefault("both")),
 			parameters.NewStringParameter("view", "view", parameters.WithStringDefault("direct")),
+			parameters.NewStringParameter("format", "format", parameters.WithStringDefault("")),
 			parameters.NewIntParameter("max_hops", "max_hops", parameters.WithIntRequired(false)),
 			parameters.NewFloatParameter("min_amount_usd", "min_amount_usd", parameters.WithFloatRequired(false)),
 		},
@@ -310,8 +321,16 @@ func edgeRow(dir, addr, raw, rawMin, rawMax string, n int, dirTotals [4]string, 
 		"Dir_Counterparties": dirTotals[0], "Dir_Transfers": dirTotals[1], "Dir_Raw": dirTotals[2], "Dir_Raw_Above_Min": dirTotals[3]}
 }
 
+// decode returns a result's report map, whichever format produced it: the
+// markdown format carries the whole report as structured content, the json
+// format is the report itself.
 func decode(t *testing.T, v any) map[string]any {
 	t.Helper()
+	if items, structured := tools.SplitResult(v); structured != nil {
+		return structured
+	} else if len(items) == 1 {
+		v = items[0]
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)
@@ -460,6 +479,262 @@ func TestNoLabelReport(t *testing.T) {
 	}
 	if out["summary"].(map[string]any)["coverage_tier"] != "strong" {
 		t.Errorf("coverage tier: %v", out["summary"])
+	}
+}
+
+// P1-1: format json returns the report object unchanged (no structured
+// envelope); the default (markdown) returns a concise text document plus the
+// whole report as structured content; an unknown format is refused.
+func TestFormatJSONAndMarkdown(t *testing.T) {
+	newChain := func() *fakeChain {
+		return &fakeChain{
+			assets: []map[string]any{usdtAssetRow("1000000000", "0", 1, 0)},
+			edges:  []map[string]any{edgeRow("in", plainSender, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "aa")},
+		}
+	}
+	tool := newTestTool(t, newChain(), &fakeLabels{})
+
+	// json: no structured envelope, the report decodes directly.
+	res, err := tool.Invoke(context.Background(), newChain(), mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target, "format": "json"}), "")
+	if err != nil {
+		t.Fatalf("json Invoke: %v", err)
+	}
+	if _, structured := tools.SplitResult(res); structured != nil {
+		t.Errorf("format json carried a structured envelope")
+	}
+	j := decode(t, res)
+	if j["score"] == nil {
+		t.Errorf("format json did not decode to the report")
+	}
+	// The leading at_a_glance carries the fields a truncated client trusts.
+	ag := j["at_a_glance"].(map[string]any)
+	if ag["score"] != j["score"].(map[string]any)["value"] {
+		t.Errorf("at_a_glance.score %v != score.value %v", ag["score"], j["score"].(map[string]any)["value"])
+	}
+	if ag["data_as_of"] != j["params"].(map[string]any)["data_as_of"] {
+		t.Errorf("at_a_glance.data_as_of %v != params.data_as_of %v", ag["data_as_of"], j["params"].(map[string]any)["data_as_of"])
+	}
+
+	// markdown (the default): a text document and the whole report structured.
+	res, err = tool.Invoke(context.Background(), newChain(), mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	if err != nil {
+		t.Fatalf("markdown Invoke: %v", err)
+	}
+	items, structured := tools.SplitResult(res)
+	if structured == nil || structured["score"] == nil {
+		t.Errorf("markdown lacked the structured report: %v", structured)
+	}
+	md, _ := items[0].(string)
+	if !strings.Contains(md, "# Address risk report") {
+		t.Errorf("markdown content is not the document:\n%s", md)
+	}
+	asOf, _ := structured["params"].(map[string]any)["data_as_of"].(string)
+	if asOf == "" || !strings.Contains(md, asOf) {
+		t.Errorf("markdown does not carry data_as_of %q", asOf)
+	}
+
+	// An unknown format is refused before any statement runs.
+	for _, f := range []string{"csv", "bogus"} {
+		bad := newChain()
+		bt := newTestTool(t, bad, &fakeLabels{})
+		if _, err := bt.Invoke(context.Background(), bad, mustParams(t, bt, map[string]any{"chain": "tron", "address": at5Target, "format": f}), ""); err == nil {
+			t.Errorf("format %q was accepted", f)
+		}
+		if len(bad.statements) != 0 {
+			t.Errorf("format %q ran %d statements", f, len(bad.statements))
+		}
+	}
+}
+
+func trxAssetRow(recv, sent string, nIn, nOut int) map[string]any {
+	firstIn := "2026-08-01 00:00:00"
+	if nIn == 0 {
+		firstIn = ""
+	}
+	return map[string]any{"Native": "1", "Contract": "", "AssetId": "", "Symbol": "TRX", "Decimals": float64(6),
+		"Received": recv, "Sent": sent, "Received_All": recv, "Sent_All": sent, "n_in": float64(nIn), "n_out": float64(nOut), "txs": float64(nIn + nOut),
+		"First": "2026-08-01 00:00:00", "Last": "2026-09-08 08:00:03", "First_All": "2026-08-01 00:00:00", "Last_All": "2026-09-08 08:00:03",
+		"First_In": firstIn}
+}
+
+// P1-2 / P1-3: a native asset (TRX) with no constant price is priced from the
+// chain's price store, so usd_conversion reads "store: …", the USD thresholds
+// apply, and a labelled 1-hop Illegal-Service contact above the dust threshold
+// sets direct_floor 100 (not 0, the value a disabled threshold produced).
+func TestNativePriceEnablesDirectFloor(t *testing.T) {
+	const illegal = "TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB"
+	chain := &fakeChain{
+		price:  "0.33075464",
+		assets: []map[string]any{trxAssetRow("0", "1000000000", 0, 1)},
+		edges: []map[string]any{
+			edgeRow("out", illegal, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "ff"),
+		},
+	}
+	labels := &fakeLabels{rows: map[string][]map[string]any{
+		illegal: {{"label_type": "money-laundering", "label_value": "ml-entity", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+	}}
+	tool := newTestTool(t, chain, labels)
+	res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := decode(t, res)
+	score := out["score"].(map[string]any)
+	if score["direct_floor"].(float64) != 100 || score["value"].(float64) != 100 {
+		t.Errorf("direct_floor %v, value %v, want 100/100 (priced Illegal Service above dust)", score["direct_floor"], score["value"])
+	}
+	params := out["params"].(map[string]any)
+	if usd, _ := params["usd_conversion"].(string); !strings.HasPrefix(usd, "store: 1 TRX = 0.33 USD (as of ") {
+		t.Errorf("usd_conversion = %q, want a store price", usd)
+	}
+	priced := false
+	for _, d := range out["cost"].(map[string]any)["detail"].([]any) {
+		if d.(map[string]any)["name"] == "price" {
+			priced = true
+		}
+	}
+	if !priced {
+		t.Errorf("no price statement counted in cost.detail: %v", out["cost"])
+	}
+	// The price statement is bounded, carries the checked key (native TRX = '0')
+	// and builds no set from a subquery, like every other statement.
+	var priceStmt string
+	for _, s := range chain.statements {
+		if strings.Contains(s, "dictGetOrNull") {
+			priceStmt = s
+		}
+	}
+	if priceStmt == "" {
+		t.Fatalf("no price statement was sent")
+	}
+	for _, want := range []string{"cityHash64('0')", "max_rows_to_read", "max_result_rows", "max_execution_time"} {
+		if !strings.Contains(priceStmt, want) {
+			t.Errorf("price statement missing %q:\n%s", want, priceStmt)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(priceStmt), "FORMAT JSON") || strings.Contains(priceStmt, "IN (SELECT") {
+		t.Errorf("price statement shape:\n%s", priceStmt)
+	}
+}
+
+// P3-4: a transfer to the target's own entity is marked same_entity, left out
+// of the score, and kept in the output and breakdown. The same-entity leg here
+// is on the sent side under a type with sending level None, so the score (set
+// by the received Illegal Service) is unchanged by the exclusion.
+func TestSameEntityExcludedFromScore(t *testing.T) {
+	const mlAddr = "TUrdaveFV4bnTgLxSDkttBMvKSTt36e1A8" // received: Illegal Service
+	const seAddr = "TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB" // sent: the target's own entity
+	chain := &fakeChain{
+		assets: []map[string]any{usdtAssetRow("1000000000", "1000000000", 1, 1)},
+		edges: []map[string]any{
+			edgeRow("in", mlAddr, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "aa"),
+			edgeRow("out", seAddr, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "bb"),
+		},
+	}
+	labels := &fakeLabels{rows: map[string][]map[string]any{
+		at5Target: {{"label_type": "custodian", "label_value": "myexchange", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+		mlAddr:    {{"label_type": "money-laundering", "label_value": "ml-entity", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+		seAddr:    {{"label_type": "custodian", "label_value": "myexchange", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+	}}
+	tool := newTestTool(t, chain, labels)
+	res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := decode(t, res)
+	if owner := out["summary"].(map[string]any)["labels"].(map[string]any)["owner"]; owner != "myexchange" {
+		t.Fatalf("owner = %v, want myexchange", owner)
+	}
+	score := out["score"].(map[string]any)
+	if score["value"].(float64) != 100 {
+		t.Errorf("score.value = %v, want 100 (received Illegal Service, unchanged by the exclusion)", score["value"])
+	}
+	if score["sent_score"] != nil {
+		t.Errorf("sent_score = %v, want null (its only leg is the same-entity self-transfer)", score["sent_score"])
+	}
+	var se map[string]any
+	for _, c := range out["connections"].([]any) {
+		cm := c.(map[string]any)
+		if cm["entity"] == "myexchange" && cm["entity_type"] == "Online Wallet" {
+			se = cm
+		}
+	}
+	if se == nil {
+		t.Fatalf("same-entity connection missing from the output: %v", out["connections"])
+	}
+	if se["same_entity"] != true {
+		t.Errorf("connection not marked same_entity: %v", se)
+	}
+	found := false
+	for _, r := range out["breakdown"].(map[string]any)["sent"].([]any) {
+		if r.(map[string]any)["entity_type"] == "Online Wallet" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("same-entity leg missing from the sent breakdown: %v", out["breakdown"])
+	}
+}
+
+// P3-4 (Option A): removing a same-entity leg from a direction's total is an
+// equivalence — the report scores exactly as one built without that leg at all
+// (the self flow contributes nothing and the other connection's share is taken
+// over the total less the self amount). A dilution bug (keeping the self leg in
+// the total) would lower sent_score here, so the test compares sent_score, not
+// only the floor-dominated value.
+func TestSameEntityOptionAEquivalence(t *testing.T) {
+	const gamblingAddr = "TUrdaveFV4bnTgLxSDkttBMvKSTt36e1A8" // sent: Gambling (sending High)
+	const seAddr = "TXHX2NUvcgft4zs6MkkUtdNVERPTavHDWN"       // sent: the target's own entity
+	build := func(withSelf bool) map[string]any {
+		sentTot, nOut, cps := "1000000000", 1, "1"
+		if withSelf {
+			sentTot, nOut, cps = "2000000000", 2, "2"
+		}
+		dir := [4]string{cps, cps, sentTot, sentTot}
+		edges := []map[string]any{edgeRow("out", gamblingAddr, "1000000000", "1000000000", "1000000000", 1, dir, "g1")}
+		if withSelf {
+			edges = append(edges, edgeRow("out", seAddr, "1000000000", "1000000000", "1000000000", 1, dir, "s1"))
+		}
+		chain := &fakeChain{assets: []map[string]any{usdtAssetRow("0", sentTot, 0, nOut)}, edges: edges}
+		labels := &fakeLabels{rows: map[string][]map[string]any{
+			at5Target:    {{"label_type": "custodian", "label_value": "myexchange", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+			gamblingAddr: {{"label_type": "gambling", "label_value": "casino-x", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+			seAddr:       {{"label_type": "custodian", "label_value": "myexchange", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+		}}
+		tool := newTestTool(t, chain, labels)
+		res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target, "direction": "sent"}), "")
+		if err != nil {
+			t.Fatalf("Invoke(withSelf=%v): %v", withSelf, err)
+		}
+		return decode(t, res)
+	}
+	withS, without := build(true), build(false)
+	sw, so := withS["score"].(map[string]any), without["score"].(map[string]any)
+	if sw["value"] != so["value"] || fmt.Sprint(sw["sent_score"]) != fmt.Sprint(so["sent_score"]) {
+		t.Errorf("Option A broken: with-self score %v, without-self score %v", sw, so)
+	}
+	// Gambling (75 x High = 75) over the total less the self amount.
+	if sw["sent_score"].(float64) != 75 {
+		t.Errorf("sent_score = %v, want 75 (Gambling on the self-reduced total)", sw["sent_score"])
+	}
+	// The same-entity connection is still in the output and the breakdown.
+	var se map[string]any
+	for _, c := range withS["connections"].([]any) {
+		if cm := c.(map[string]any); cm["entity"] == "myexchange" && cm["entity_type"] == "Online Wallet" {
+			se = cm
+		}
+	}
+	if se == nil || se["same_entity"] != true {
+		t.Errorf("same-entity connection missing or unmarked: %v", se)
+	}
+	found := false
+	for _, r := range withS["breakdown"].(map[string]any)["sent"].([]any) {
+		if r.(map[string]any)["entity_type"] == "Online Wallet" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("same-entity leg missing from the sent breakdown: %v", withS["breakdown"])
 	}
 }
 

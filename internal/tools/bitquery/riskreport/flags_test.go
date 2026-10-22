@@ -53,20 +53,22 @@ func TestFindLookalikesTestWallet(t *testing.T) {
 		contact{Dir: received, Address: "TVLWhvuwaZSDuBBGmbZcikqArX92VKG1yK", Transfers: 1, NativeDust: 1},
 		contact{Dir: received, Address: "TGA4rRxJv7HATwXbWYeYevia2ucfQQF1yK", Transfers: 1, NativeDust: 1},
 	)
-	got := findLookalikes(poisoningInput{Target: target, Asset: asset, Other: other, DustRaw: usdt(5), CapRaw: usdt(100), MinMatch: 3, Decimals: 6})
+	// These are Tron addresses, so PrefixSkip is 1: the matching first characters
+	// are counted after the leading 'T' every address shares.
+	got := findLookalikes(poisoningInput{Target: target, Asset: asset, Other: other, DustRaw: usdt(5), CapRaw: usdt(100), MinMatch: 3, PrefixSkip: 1, Decimals: 6})
 	want := map[string]struct {
 		imitates    string
 		kind        string
 		first, last int
 	}{
-		"TB8hyXhttYSok8ARGcTuAzMroYvw7r1QfB": {"TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB", "asset_small_transfer", 4, 3},
-		"TRfwwTEJL8LkKCVX8iX2UqNdnbfGVke1uM": {"TRfwrEAM7X7zGVEj6z6kNQo6a954Vkc1uM", "asset_small_transfer", 4, 3},
-		"TMoA4yBcdTbrBsrH3RoqvVFxigyZdiBttw": {"TPr6F6XitL2UH2NY1motzuSvhn7YdiBttw", "asset_small_transfer", 1, 6},
-		"TXyz1111111111111111111111111rJQfB": {"TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB", "native_dust", 1, 5},
-		"TSvJFfcoYwxgALaJ1FXktN8h26BQh2D1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 1, 3},
-		"TUD8rkxQvVePE5pB97GAX3jnojiCnpq1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 1, 3},
-		"TVLWhvuwaZSDuBBGmbZcikqArX92VKG1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 1, 3},
-		"TGA4rRxJv7HATwXbWYeYevia2ucfQQF1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 1, 3},
+		"TB8hyXhttYSok8ARGcTuAzMroYvw7r1QfB": {"TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB", "asset_small_transfer", 3, 3},
+		"TRfwwTEJL8LkKCVX8iX2UqNdnbfGVke1uM": {"TRfwrEAM7X7zGVEj6z6kNQo6a954Vkc1uM", "asset_small_transfer", 3, 3},
+		"TMoA4yBcdTbrBsrH3RoqvVFxigyZdiBttw": {"TPr6F6XitL2UH2NY1motzuSvhn7YdiBttw", "asset_small_transfer", 0, 6},
+		"TXyz1111111111111111111111111rJQfB": {"TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB", "native_dust", 0, 5},
+		"TSvJFfcoYwxgALaJ1FXktN8h26BQh2D1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 0, 3},
+		"TUD8rkxQvVePE5pB97GAX3jnojiCnpq1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 0, 3},
+		"TVLWhvuwaZSDuBBGmbZcikqArX92VKG1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 0, 3},
+		"TGA4rRxJv7HATwXbWYeYevia2ucfQQF1yK": {"THWDZvDbRrM27j7k1S224pdaeUZP21j1yK", "native_dust", 0, 3},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("found %d look-alikes, want %d: %+v", len(got), len(want), got)

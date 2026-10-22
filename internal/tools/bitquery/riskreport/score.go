@@ -48,6 +48,7 @@ const formulaText = "level factor d: High 1.0, Medium 0.6, Low 0.3, None 0 (as i
 	"where share = amount / that direction's connection total (transfers above min_amount_usd). " +
 	"direct_floor = the highest weight_c * d_c of a 1-hop counterparty with an entity label, in the report asset, above the dust threshold. " +
 	"score = max(received_score, sent_score, direct_floor). " +
+	"Connections marked same_entity are removed from the direction's total before shares are taken, so the score is that of the flow that reached other entities; they stay in the breakdown and connections. " +
 	"Hops: 1 = a direct counterparty of the address."
 
 // weights are the profile in force for one report: the configured profile with
