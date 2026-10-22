@@ -101,6 +101,8 @@ type ClientCapabilities struct {
 type ServerCapabilities struct {
 	Tools   *ListChanged `json:"tools,omitempty"`
 	Prompts *ListChanged `json:"prompts,omitempty"`
+	// Bitquery: set only while the server serves a resource.
+	Resources *ListChanged `json:"resources,omitempty"`
 }
 
 // Base interface for metadata with name (identifier) and title (display name) properties.

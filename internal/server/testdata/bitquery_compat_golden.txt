@@ -1,0 +1,682 @@
+=== http initialize 2024-11-05
+status 200
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http initialize 2025-03-26
+status 200
+{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http initialize 2025-06-18
+status 200
+{"jsonrpc":"2.0","id":3,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http initialize 2025-11-25
+status 200
+{"jsonrpc":"2.0","id":4,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http initialize 2026-07-28
+status 404
+{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"invalid method initialize"}}
+=== http initialize 1999-01-01
+status 200
+{"jsonrpc":"2.0","id":6,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http 2024-11-05 tools/list
+status 200
+{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"array_param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http 2024-11-05 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":8,"result":{"tools":[{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http 2024-11-05 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http 2024-11-05 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":10,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http 2024-11-05 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":11,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http 2024-11-05 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":12,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2024-11-05 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":13,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2024-11-05 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":14,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http 2024-11-05 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":15,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http 2024-11-05 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":16,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http 2024-11-05 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":17,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http 2024-11-05 prompts/list
+status 200
+{"jsonrpc":"2.0","id":18,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http 2024-11-05 prompts/get
+status 200
+{"jsonrpc":"2.0","id":19,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http 2024-11-05 resources/list
+status 404
+{"jsonrpc":"2.0","id":20,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http 2024-11-05 resources/read
+status 404
+{"jsonrpc":"2.0","id":21,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http 2024-11-05 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":22,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http 2024-11-05 unknown method
+status 404
+{"jsonrpc":"2.0","id":23,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http 2024-11-05 ping
+status 200
+{"jsonrpc":"2.0","id":24,"result":{}}
+=== http 2024-11-05 notifications/initialized
+status 202
+=== http 2025-03-26 tools/list
+status 200
+{"jsonrpc":"2.0","id":26,"result":{"tools":[{"name":"array_param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http 2025-03-26 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":27,"result":{"tools":[{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http 2025-03-26 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":28,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http 2025-03-26 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":29,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http 2025-03-26 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":30,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http 2025-03-26 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":31,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-03-26 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":32,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-03-26 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":33,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http 2025-03-26 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":34,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http 2025-03-26 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":35,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http 2025-03-26 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":36,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http 2025-03-26 prompts/list
+status 200
+{"jsonrpc":"2.0","id":37,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http 2025-03-26 prompts/get
+status 200
+{"jsonrpc":"2.0","id":38,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http 2025-03-26 resources/list
+status 404
+{"jsonrpc":"2.0","id":39,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http 2025-03-26 resources/read
+status 404
+{"jsonrpc":"2.0","id":40,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http 2025-03-26 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":41,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http 2025-03-26 unknown method
+status 404
+{"jsonrpc":"2.0","id":42,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http 2025-03-26 ping
+status 200
+{"jsonrpc":"2.0","id":43,"result":{}}
+=== http 2025-03-26 notifications/initialized
+status 202
+=== http 2025-06-18 tools/list
+status 200
+{"jsonrpc":"2.0","id":45,"result":{"tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http 2025-06-18 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":46,"result":{"tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http 2025-06-18 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":47,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http 2025-06-18 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":48,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http 2025-06-18 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":49,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http 2025-06-18 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":50,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-06-18 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":51,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-06-18 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":52,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http 2025-06-18 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":53,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http 2025-06-18 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":54,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http 2025-06-18 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":55,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http 2025-06-18 prompts/list
+status 200
+{"jsonrpc":"2.0","id":56,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http 2025-06-18 prompts/get
+status 200
+{"jsonrpc":"2.0","id":57,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http 2025-06-18 resources/list
+status 404
+{"jsonrpc":"2.0","id":58,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http 2025-06-18 resources/read
+status 404
+{"jsonrpc":"2.0","id":59,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http 2025-06-18 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":60,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http 2025-06-18 unknown method
+status 404
+{"jsonrpc":"2.0","id":61,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http 2025-06-18 ping
+status 200
+{"jsonrpc":"2.0","id":62,"result":{}}
+=== http 2025-06-18 notifications/initialized
+status 202
+=== http 2025-11-25 tools/list
+status 200
+{"jsonrpc":"2.0","id":64,"result":{"tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http 2025-11-25 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":65,"result":{"tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http 2025-11-25 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":66,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http 2025-11-25 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":67,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http 2025-11-25 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":68,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http 2025-11-25 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":69,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-11-25 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":70,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2025-11-25 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":71,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http 2025-11-25 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":72,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http 2025-11-25 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":73,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http 2025-11-25 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":74,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http 2025-11-25 prompts/list
+status 200
+{"jsonrpc":"2.0","id":75,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http 2025-11-25 prompts/get
+status 200
+{"jsonrpc":"2.0","id":76,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http 2025-11-25 resources/list
+status 404
+{"jsonrpc":"2.0","id":77,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http 2025-11-25 resources/read
+status 404
+{"jsonrpc":"2.0","id":78,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http 2025-11-25 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":79,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http 2025-11-25 unknown method
+status 404
+{"jsonrpc":"2.0","id":80,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http 2025-11-25 ping
+status 200
+{"jsonrpc":"2.0","id":81,"result":{}}
+=== http 2025-11-25 notifications/initialized
+status 202
+=== http 2026-07-28 tools/list
+status 200
+{"jsonrpc":"2.0","id":83,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"com.google.cloud/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http 2026-07-28 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":84,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http 2026-07-28 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":85,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"no_params\""}]}}
+=== http 2026-07-28 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":86,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"some_params\""}]}}
+=== http 2026-07-28 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":87,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"array_param\""}]}}
+=== http 2026-07-28 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":88,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2026-07-28 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":89,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http 2026-07-28 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":90,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http 2026-07-28 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":91,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http 2026-07-28 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":92,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http 2026-07-28 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":93,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http 2026-07-28 prompts/list
+status 200
+{"jsonrpc":"2.0","id":94,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http 2026-07-28 prompts/get
+status 200
+{"jsonrpc":"2.0","id":95,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http 2026-07-28 resources/list
+status 404
+{"jsonrpc":"2.0","id":96,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http 2026-07-28 resources/read
+status 404
+{"jsonrpc":"2.0","id":97,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http 2026-07-28 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":98,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http 2026-07-28 unknown method
+status 404
+{"jsonrpc":"2.0","id":99,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http 2026-07-28 server/discover
+status 200
+{"jsonrpc":"2.0","id":100,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","supportedVersions":["2024-11-05","2025-03-26","2025-06-18","2025-11-25","2026-07-28"],"capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}}}}
+=== stdio "" tools/list
+{"jsonrpc":"2.0","id":101,"result":{"tools":[{"name":"array_param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== stdio "" tools/call no_params
+{"jsonrpc":"2.0","id":102,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== stdio "" tools/call some_params
+{"jsonrpc":"2.0","id":103,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== stdio "" tools/call array_param
+{"jsonrpc":"2.0","id":104,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== stdio "" tools/call map_result
+{"jsonrpc":"2.0","id":105,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== stdio "" tools/call refused
+{"jsonrpc":"2.0","id":106,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== stdio "" tools/call auth_tool
+{"jsonrpc":"2.0","id":107,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== stdio "" tools/call missing
+{"jsonrpc":"2.0","id":108,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== stdio "" prompts/list
+{"jsonrpc":"2.0","id":109,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== stdio "" prompts/get
+{"jsonrpc":"2.0","id":110,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== stdio "" resources/list
+{"jsonrpc":"2.0","id":111,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== stdio "" resources/read
+{"jsonrpc":"2.0","id":112,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== stdio "" resources/templates/list
+{"jsonrpc":"2.0","id":113,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== stdio "" unknown method
+{"jsonrpc":"2.0","id":114,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== stdio "" ping
+{"jsonrpc":"2.0","id":115,"result":{}}
+=== stdio "2025-11-25" tools/list
+{"jsonrpc":"2.0","id":116,"result":{"tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== stdio "2025-11-25" tools/call no_params
+{"jsonrpc":"2.0","id":117,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== stdio "2025-11-25" tools/call some_params
+{"jsonrpc":"2.0","id":118,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== stdio "2025-11-25" tools/call array_param
+{"jsonrpc":"2.0","id":119,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== stdio "2025-11-25" tools/call map_result
+{"jsonrpc":"2.0","id":120,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== stdio "2025-11-25" tools/call refused
+{"jsonrpc":"2.0","id":121,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== stdio "2025-11-25" tools/call auth_tool
+{"jsonrpc":"2.0","id":122,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== stdio "2025-11-25" tools/call missing
+{"jsonrpc":"2.0","id":123,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== stdio "2025-11-25" prompts/list
+{"jsonrpc":"2.0","id":124,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== stdio "2025-11-25" prompts/get
+{"jsonrpc":"2.0","id":125,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== stdio "2025-11-25" resources/list
+{"jsonrpc":"2.0","id":126,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== stdio "2025-11-25" resources/read
+{"jsonrpc":"2.0","id":127,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== stdio "2025-11-25" resources/templates/list
+{"jsonrpc":"2.0","id":128,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== stdio "2025-11-25" unknown method
+{"jsonrpc":"2.0","id":129,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== stdio "2025-11-25" ping
+{"jsonrpc":"2.0","id":130,"result":{}}
+=== stdio "2026-07-28" tools/list
+{"jsonrpc":"2.0","id":131,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"com.google.cloud/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== stdio "2026-07-28" tools/call no_params
+{"jsonrpc":"2.0","id":132,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"no_params\""}]}}
+=== stdio "2026-07-28" tools/call some_params
+{"jsonrpc":"2.0","id":133,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"some_params\""}]}}
+=== stdio "2026-07-28" tools/call array_param
+{"jsonrpc":"2.0","id":134,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"array_param\""}]}}
+=== stdio "2026-07-28" tools/call map_result
+{"jsonrpc":"2.0","id":135,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== stdio "2026-07-28" tools/call refused
+{"jsonrpc":"2.0","id":136,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== stdio "2026-07-28" tools/call auth_tool
+{"jsonrpc":"2.0","id":137,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== stdio "2026-07-28" tools/call missing
+{"jsonrpc":"2.0","id":138,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== stdio "2026-07-28" prompts/list
+{"jsonrpc":"2.0","id":139,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== stdio "2026-07-28" prompts/get
+{"jsonrpc":"2.0","id":140,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== stdio "2026-07-28" resources/list
+{"jsonrpc":"2.0","id":141,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== stdio "2026-07-28" resources/read
+{"jsonrpc":"2.0","id":142,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== stdio "2026-07-28" resources/templates/list
+{"jsonrpc":"2.0","id":143,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== stdio "2026-07-28" unknown method
+{"jsonrpc":"2.0","id":144,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== stdio "2026-07-28" server/discover
+{"jsonrpc":"2.0","id":145,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","supportedVersions":["2024-11-05","2025-03-26","2025-06-18","2025-11-25","2026-07-28"],"capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}}}}
+=== http-draft initialize 2024-11-05
+status 200
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http-draft initialize 2025-03-26
+status 200
+{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http-draft initialize 2025-06-18
+status 200
+{"jsonrpc":"2.0","id":3,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http-draft initialize 2025-11-25
+status 200
+{"jsonrpc":"2.0","id":4,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}},"serverInfo":{"name":"Toolbox","version":"0.0.0"}}}
+=== http-draft initialize 2026-07-28
+status 404
+{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"invalid method initialize"}}
+=== http-draft initialize 1999-01-01
+status 404
+{"jsonrpc":"2.0","id":6,"error":{"code":-32601,"message":"invalid method initialize"}}
+=== http-draft 2024-11-05 tools/list
+status 200
+{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"array_param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http-draft 2024-11-05 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":8,"result":{"tools":[{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http-draft 2024-11-05 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http-draft 2024-11-05 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":10,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http-draft 2024-11-05 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":11,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http-draft 2024-11-05 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":12,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2024-11-05 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":13,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2024-11-05 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":14,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http-draft 2024-11-05 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":15,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http-draft 2024-11-05 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":16,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http-draft 2024-11-05 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":17,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http-draft 2024-11-05 prompts/list
+status 200
+{"jsonrpc":"2.0","id":18,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http-draft 2024-11-05 prompts/get
+status 200
+{"jsonrpc":"2.0","id":19,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http-draft 2024-11-05 resources/list
+status 404
+{"jsonrpc":"2.0","id":20,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http-draft 2024-11-05 resources/read
+status 404
+{"jsonrpc":"2.0","id":21,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http-draft 2024-11-05 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":22,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http-draft 2024-11-05 unknown method
+status 404
+{"jsonrpc":"2.0","id":23,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http-draft 2024-11-05 ping
+status 200
+{"jsonrpc":"2.0","id":24,"result":{}}
+=== http-draft 2024-11-05 notifications/initialized
+status 202
+=== http-draft 2025-03-26 tools/list
+status 200
+{"jsonrpc":"2.0","id":26,"result":{"tools":[{"name":"array_param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http-draft 2025-03-26 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":27,"result":{"tools":[{"name":"map_result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http-draft 2025-03-26 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":28,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http-draft 2025-03-26 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":29,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http-draft 2025-03-26 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":30,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http-draft 2025-03-26 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":31,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-03-26 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":32,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-03-26 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":33,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http-draft 2025-03-26 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":34,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http-draft 2025-03-26 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":35,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http-draft 2025-03-26 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":36,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http-draft 2025-03-26 prompts/list
+status 200
+{"jsonrpc":"2.0","id":37,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http-draft 2025-03-26 prompts/get
+status 200
+{"jsonrpc":"2.0","id":38,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http-draft 2025-03-26 resources/list
+status 404
+{"jsonrpc":"2.0","id":39,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http-draft 2025-03-26 resources/read
+status 404
+{"jsonrpc":"2.0","id":40,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http-draft 2025-03-26 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":41,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http-draft 2025-03-26 unknown method
+status 404
+{"jsonrpc":"2.0","id":42,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http-draft 2025-03-26 ping
+status 200
+{"jsonrpc":"2.0","id":43,"result":{}}
+=== http-draft 2025-03-26 notifications/initialized
+status 202
+=== http-draft 2025-06-18 tools/list
+status 200
+{"jsonrpc":"2.0","id":45,"result":{"tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http-draft 2025-06-18 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":46,"result":{"tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http-draft 2025-06-18 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":47,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http-draft 2025-06-18 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":48,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http-draft 2025-06-18 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":49,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http-draft 2025-06-18 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":50,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-06-18 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":51,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-06-18 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":52,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http-draft 2025-06-18 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":53,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http-draft 2025-06-18 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":54,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http-draft 2025-06-18 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":55,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http-draft 2025-06-18 prompts/list
+status 200
+{"jsonrpc":"2.0","id":56,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http-draft 2025-06-18 prompts/get
+status 200
+{"jsonrpc":"2.0","id":57,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http-draft 2025-06-18 resources/list
+status 404
+{"jsonrpc":"2.0","id":58,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http-draft 2025-06-18 resources/read
+status 404
+{"jsonrpc":"2.0","id":59,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http-draft 2025-06-18 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":60,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http-draft 2025-06-18 unknown method
+status 404
+{"jsonrpc":"2.0","id":61,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http-draft 2025-06-18 ping
+status 200
+{"jsonrpc":"2.0","id":62,"result":{}}
+=== http-draft 2025-06-18 notifications/initialized
+status 202
+=== http-draft 2025-11-25 tools/list
+status 200
+{"jsonrpc":"2.0","id":64,"result":{"tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"toolbox/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http-draft 2025-11-25 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":65,"result":{"tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http-draft 2025-11-25 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":66,"result":{"content":[{"type":"text","text":"\"no_params\""}]}}
+=== http-draft 2025-11-25 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":67,"result":{"content":[{"type":"text","text":"\"some_params\""}]}}
+=== http-draft 2025-11-25 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":68,"result":{"content":[{"type":"text","text":"\"array_param\""}]}}
+=== http-draft 2025-11-25 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":69,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-11-25 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":70,"result":{"content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2025-11-25 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":71,"result":{"content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http-draft 2025-11-25 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":72,"result":{"content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http-draft 2025-11-25 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":73,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http-draft 2025-11-25 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":74,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http-draft 2025-11-25 prompts/list
+status 200
+{"jsonrpc":"2.0","id":75,"result":{"prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http-draft 2025-11-25 prompts/get
+status 200
+{"jsonrpc":"2.0","id":76,"result":{"messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http-draft 2025-11-25 resources/list
+status 404
+{"jsonrpc":"2.0","id":77,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http-draft 2025-11-25 resources/read
+status 404
+{"jsonrpc":"2.0","id":78,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http-draft 2025-11-25 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":79,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http-draft 2025-11-25 unknown method
+status 404
+{"jsonrpc":"2.0","id":80,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http-draft 2025-11-25 ping
+status 200
+{"jsonrpc":"2.0","id":81,"result":{}}
+=== http-draft 2025-11-25 notifications/initialized
+status 202
+=== http-draft 2026-07-28 tools/list
+status 200
+{"jsonrpc":"2.0","id":83,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","tools":[{"name":"array_param","title":"Array Param","description":"some description","inputSchema":{"type":"object","properties":{"my_array":{"type":"array","description":"this param is an array of strings","items":{"type":"string","description":"string item"}}},"required":["my_array"]},"annotations":{"title":"Array Param"}},{"name":"auth_tool","title":"Auth Tool","description":"needs auth","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Auth Tool"},"_meta":{"com.google.cloud/authInvoke":["my-auth"]}},{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}},{"name":"no_params","title":"No Params","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"No Params"}},{"name":"refused","title":"Refused","description":"fails","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Refused"}},{"name":"some_params","title":"Some Params","inputSchema":{"type":"object","properties":{"param1":{"type":"integer","description":"This is the first parameter."},"param2":{"type":"integer","description":"This is the second parameter."}},"required":["param1","param2"]},"annotations":{"title":"Some Params"}}]}}
+=== http-draft 2026-07-28 tools/list maps
+status 200
+{"jsonrpc":"2.0","id":84,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","tools":[{"name":"map_result","title":"Map Result","description":"returns an object","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"title":"Map Result"}}]}}
+=== http-draft 2026-07-28 tools/call no_params
+status 200
+{"jsonrpc":"2.0","id":85,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"no_params\""}]}}
+=== http-draft 2026-07-28 tools/call some_params
+status 200
+{"jsonrpc":"2.0","id":86,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"some_params\""}]}}
+=== http-draft 2026-07-28 tools/call array_param
+status 200
+{"jsonrpc":"2.0","id":87,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"array_param\""}]}}
+=== http-draft 2026-07-28 tools/call map_result
+status 200
+{"jsonrpc":"2.0","id":88,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2026-07-28 tools/call map_result maps
+status 200
+{"jsonrpc":"2.0","id":89,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"{\"note\":\"a\\u003cb\\u0026c\",\"rows\":[1,2]}"}]}}
+=== http-draft 2026-07-28 tools/call refused
+status 200
+{"jsonrpc":"2.0","id":90,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"the statement was refused"}],"isError":true}}
+=== http-draft 2026-07-28 tools/call auth_tool
+status 200
+{"jsonrpc":"2.0","id":91,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","content":[{"type":"text","text":"\"auth_tool\""}]}}
+=== http-draft 2026-07-28 tools/call missing
+status 200
+{"jsonrpc":"2.0","id":92,"error":{"code":-32602,"message":"invalid tool name: tool with name \"nope\" does not exist"}}
+=== http-draft 2026-07-28 tools/call outside group
+status 200
+{"jsonrpc":"2.0","id":93,"error":{"code":-32602,"message":"invalid tool name: tool with name \"no_params\" does not exist"}}
+=== http-draft 2026-07-28 prompts/list
+status 200
+{"jsonrpc":"2.0","id":94,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","ttlMs":300000,"cacheScope":"public","prompts":[{"name":"prompt1"},{"name":"prompt2","arguments":[{"name":"arg1","description":"This is the first argument.","required":true}]}]}}
+=== http-draft 2026-07-28 prompts/get
+status 200
+{"jsonrpc":"2.0","id":95,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","messages":[{"role":"user","content":{"type":"text","text":"substituted prompt2"}}]}}
+=== http-draft 2026-07-28 resources/list
+status 404
+{"jsonrpc":"2.0","id":96,"error":{"code":-32601,"message":"invalid method resources/list"}}
+=== http-draft 2026-07-28 resources/read
+status 404
+{"jsonrpc":"2.0","id":97,"error":{"code":-32601,"message":"invalid method resources/read"}}
+=== http-draft 2026-07-28 resources/templates/list
+status 404
+{"jsonrpc":"2.0","id":98,"error":{"code":-32601,"message":"invalid method resources/templates/list"}}
+=== http-draft 2026-07-28 unknown method
+status 404
+{"jsonrpc":"2.0","id":99,"error":{"code":-32601,"message":"invalid method nothing/here"}}
+=== http-draft 2026-07-28 server/discover
+status 200
+{"jsonrpc":"2.0","id":100,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Toolbox","version":"0.0.0"}},"resultType":"complete","supportedVersions":["2024-11-05","2025-03-26","2025-06-18","2025-11-25","2026-07-28"],"capabilities":{"tools":{"listChanged":false},"prompts":{"listChanged":false}}}}

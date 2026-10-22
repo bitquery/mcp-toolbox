@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/googleapis/mcp-toolbox/internal/auth"
+	"github.com/googleapis/mcp-toolbox/internal/bitqueryresources"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/prompts"
@@ -36,6 +37,9 @@ type PrimitiveManager struct {
 	tools           map[string]tools.Tool
 	prompts         map[string]prompts.Prompt
 	groups          map[string]group.Group
+	// Bitquery: the built-in resources the cfg enables, keyed by URI
+	// (bitquery_resources.go).
+	resources map[string]bitqueryresources.Resource
 }
 
 func NewPrimitiveManager(

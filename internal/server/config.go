@@ -28,6 +28,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/auth"
 	"github.com/googleapis/mcp-toolbox/internal/auth/generic"
 	"github.com/googleapis/mcp-toolbox/internal/auth/google"
+	"github.com/googleapis/mcp-toolbox/internal/bitqueryresources"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels/gemini"
 	"github.com/googleapis/mcp-toolbox/internal/group"
@@ -61,6 +62,9 @@ type ServerConfig struct {
 	// GroupConfigs defines groups of tools and prompts declared via `kind: group`
 	// (legacy `kind: toolset` configs are folded into groups at unmarshal).
 	GroupConfigs GroupConfigs
+	// ResourceConfigs defines the built-in resources served, declared via
+	// `kind: bitqueryResource` (Bitquery fork, see bitquery_resources.go).
+	ResourceConfigs ResourceConfigs
 	// IgnoreUnknownTools logs warnings and skips unknown/unsupported tool types instead of failing to start.
 	IgnoreUnknownTools bool
 	// LoggingFormat defines whether structured loggings are used.
@@ -169,6 +173,12 @@ type PromptConfigs map[string]prompts.PromptConfig
 type GroupConfigs map[string]group.GroupConfig
 
 func UnmarshalPrimitiveConfig(ctx context.Context, raw []byte) (SourceConfigs, AuthServiceConfigs, EmbeddingModelConfigs, ToolConfigs, PromptConfigs, GroupConfigs, error) {
+	return unmarshalPrimitiveConfig(ctx, raw, nil)
+}
+
+// unmarshalPrimitiveConfig parses every document of a cfg. Bitquery: the
+// `kind: bitqueryResource` documents go to resourceConfigs, when it is not nil.
+func unmarshalPrimitiveConfig(ctx context.Context, raw []byte, resourceConfigs *ResourceConfigs) (SourceConfigs, AuthServiceConfigs, EmbeddingModelConfigs, ToolConfigs, PromptConfigs, GroupConfigs, error) {
 	// prepare configs map
 	var sourceConfigs SourceConfigs
 	var authServiceConfigs AuthServiceConfigs
@@ -180,6 +190,7 @@ func UnmarshalPrimitiveConfig(ctx context.Context, raw []byte) (SourceConfigs, A
 	// folded into groupConfigs after the loop so explicit `kind: group` definitions
 	// take precedence regardless of document order.
 	var toolsetGroups map[string]group.GroupConfig
+	var bitqueryResourceConfigs ResourceConfigs
 	// promptset configs is not yet supported
 
 	file, err := parser.ParseBytes(raw, 0)
@@ -342,6 +353,21 @@ func UnmarshalPrimitiveConfig(ctx context.Context, raw []byte) (SourceConfigs, A
 				return nil, nil, nil, nil, nil, nil, fmt.Errorf("group %q declared more than once", name)
 			}
 			groupConfigs[name] = c
+		case bitqueryresources.Kind:
+			c, err := UnmarshalYAMLBitqueryResourceConfig(ctx, name, resource)
+			if err != nil {
+				if len(file.Docs) > 1 {
+					return nil, nil, nil, nil, nil, nil, fmt.Errorf("document %d: error unmarshaling %s %q: %w", docIndex, kind, name, err)
+				}
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("error unmarshaling %s: %w", kind, err)
+			}
+			if bitqueryResourceConfigs == nil {
+				bitqueryResourceConfigs = make(ResourceConfigs)
+			}
+			if _, exists := bitqueryResourceConfigs[name]; exists {
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("%s %q declared more than once", kind, name)
+			}
+			bitqueryResourceConfigs[name] = c
 		default:
 			if len(file.Docs) > 1 {
 				return nil, nil, nil, nil, nil, nil, fmt.Errorf("%s invalid kind %q", formatDocLocation(docIndex, keyToken(doc.Body, "kind"), doc.Body), kind)
@@ -365,6 +391,9 @@ func UnmarshalPrimitiveConfig(ctx context.Context, raw []byte) (SourceConfigs, A
 			}
 			groupConfigs[name] = gc
 		}
+	}
+	if resourceConfigs != nil {
+		*resourceConfigs = bitqueryResourceConfigs
 	}
 
 	return sourceConfigs, authServiceConfigs, embeddingModelConfigs, toolConfigs, promptConfigs, groupConfigs, nil

@@ -187,6 +187,8 @@ type Implementation struct {
 type ServerCapabilities struct {
 	Tools   *ListChanged `json:"tools,omitempty"`
 	Prompts *ListChanged `json:"prompts,omitempty"`
+	// Bitquery: set only while the server serves a resource.
+	Resources *ListChanged `json:"resources,omitempty"`
 }
 
 // ListChange represents whether the server supports notification for changes to the capabilities.

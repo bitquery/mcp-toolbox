@@ -357,7 +357,8 @@ func toolInvokeHandler(s *Server, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resMarshal, err := json.Marshal(res)
+	// Bitquery: a structured result is sent as its content elements here.
+	resMarshal, err := json.Marshal(tools.PlainResult(res))
 	if err != nil {
 		err = fmt.Errorf("unable to marshal result: %w", err)
 		s.logger.DebugContext(ctx, err.Error())

@@ -831,6 +831,8 @@ func processMcpMessage(ctx context.Context, body []byte, s *Server, protocolVers
 	ctx = util.WithEnableDraftSpecs(ctx, s.enableDraftSpecs)
 	// Bitquery: server instructions for the initialize / server/discover result
 	ctx = util.WithServerInstructions(ctx, s.ServerInstructions())
+	// Bitquery: the resources capability, advertised only while a resource is served
+	ctx = util.WithResourcesCapability(ctx, s.PrimitiveMgr != nil && s.PrimitiveMgr.HasResources())
 	// Process the method
 	switch baseMessage.Method {
 	// This is only used for <v2026
