@@ -71,6 +71,9 @@ type Config struct {
 	// Bitquery: send each call to one of a fixed set of sources, chosen by the
 	// exact value of one string parameter (see bitquery_routes.go).
 	SourceRoutes *SourceRoutes `yaml:"bitquerySourceRoutes,omitempty"`
+	// Bitquery: add address labels from a clickhouse source to the decoded
+	// result (see bitquery_labels.go).
+	Labels *LabelsConfig `yaml:"bitqueryLabels,omitempty"`
 }
 
 // validate interface
@@ -98,6 +101,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
+	labels, err := cfg.initLabels(ctx, allParameters)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create Toolbox manifest
 	paramManifest := allParameters.Manifest()
@@ -115,6 +122,7 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 			allParameters,
 		),
 		routes: routes,
+		labels: labels,
 	}, nil
 }
 
@@ -124,6 +132,7 @@ var _ tools.Tool = Tool{}
 type Tool struct {
 	tools.BaseTool[Config]
 	routes *sourceRoutes
+	labels *bitqueryLabels
 }
 
 func (t Tool) GetSourceName() string {
@@ -353,6 +362,11 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	resp, err := source.RunRequest(ctx, req)
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
+	}
+	// Bitquery: a tool with bitqueryLabels gets the labels of the addresses in
+	// its result; a failed lookup leaves the data as it is.
+	if t.labels != nil {
+		resp = t.labels.enrich(ctx, resp, paramsMap)
 	}
 	return resp, nil
 }
