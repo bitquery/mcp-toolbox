@@ -125,13 +125,18 @@ func (s *Source) ClickHousePool() *sql.DB {
 }
 
 func (s *Source) RunSQL(ctx context.Context, statement string, params parameters.ParamValues) (any, error) {
-	// Bitquery: a statement that calls url(), remote(), redis(), s3(), file() or
-	// another table function reaching outside the server is refused before it is
-	// sent (see util.BitqueryForbiddenTableFunction). Applies to every tool on a
-	// ClickHouse source — the raw hatch and the templated tools alike, so a value
-	// pasted into a template cannot smuggle one in either.
-	if fn, ok := util.BitqueryForbiddenTableFunction(statement); ok {
-		return nil, util.BitqueryTableFunctionRefused(fn)
+	// Bitquery: a statement that reaches outside the server — url(), remote(),
+	// redis(), s3(), file() or another table function, or a setting that carries
+	// a subquery — is refused before it is sent (see util.BitqueryRefuseSQL).
+	// Applies to every tool on a ClickHouse source — the raw hatch and the
+	// templated tools alike, so a value pasted into a template cannot smuggle
+	// one in either. The log line names the construct only, never the statement.
+	if refusal := util.BitqueryRefuseSQL(statement); refusal != nil {
+		if logger, err := util.LoggerFromContext(ctx); err == nil {
+			logger.WarnContext(ctx, "refused a statement that reaches outside the server",
+				"source", s.Name, "reason", refusal.Error())
+		}
+		return nil, refusal
 	}
 
 	var sliceParams []any

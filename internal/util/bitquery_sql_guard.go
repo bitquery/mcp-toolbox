@@ -12,22 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Bitquery-specific: refuse a statement that calls a ClickHouse table function
-// which makes the SERVER open a connection somewhere else — url(), remote(),
-// redis(), s3(), file() and their kin. The raw-SQL tools accept any statement a
-// caller writes, and the database users they run as are only `readonly`:
-// readonly stops writes, not a SELECT that fetches an arbitrary address through
-// the server. Seen in production (2026-08-09, 2026-10-07): url() against
-// internal cluster hosts and the cloud metadata address, redis() scans of
-// internal IPs, url() with a third party's bearer token in the headers.
+// Bitquery-specific: refuse a statement that would make the SERVER reach
+// outside itself — a table function such as url(), remote(), redis(), s3() or
+// file(), or a per-query setting that carries a subquery (additional_table_filters,
+// additional_result_filter). The raw-SQL tools accept any statement a caller
+// writes, and the database users they run as are only `readonly`: readonly=2
+// still allows a SELECT that fetches an arbitrary address through the server,
+// and allows setting changes in the query. Seen in production (2026-08-09,
+// 2026-10-07, BIT-16095): url() against internal cluster hosts and the cloud
+// metadata address, redis() scans of internal IPs, url() with a third party's
+// bearer token in the headers.
 //
 // This is a defence in depth in front of the database grants, not a
-// replacement: the grants (REVOKE URL, REMOTE, REDIS, S3, FILE, ... ON *.*)
-// stay the real boundary. The check is textual and deliberately simple: string
-// literals and comments are removed, quoted identifiers unquoted, and any
-// remaining forbidden name followed by `(` is a refusal. A false positive
-// (a column literally named `url` called like a function) is not possible in
-// ClickHouse SQL, since a name followed by `(` is always a call.
+// replacement: the grants (REVOKE SOURCES ON *.*) stay the real boundary. The
+// check is textual: string literals, comments and heredocs are removed and
+// identifier quotes dropped, then a forbidden name followed by `(` — or a
+// forbidden setting name — is a refusal. A name followed by `(` is always a
+// call in ClickHouse SQL, so a column named `url` used as data (url, domain(url))
+// is never a false positive. It errs toward refusing: a quoted identifier that
+// hides an escape (`\x75rl`(…) reads as url(…) to the server) is refused
+// outright rather than decoded.
 package util
 
 import (
@@ -36,63 +40,111 @@ import (
 	"strings"
 )
 
-// bitqueryForbiddenTableFunctions is every ClickHouse table function that
-// reaches outside the server, with its *Cluster / AllReplicas variants. Benign
-// table functions (numbers, values, generateRandom, dictionary, view, merge,
-// input, format, null, zeros, loop, mergeTreeIndex) are not listed.
-var bitqueryForbiddenTableFunctions = []string{
+// bitqueryForbiddenExact is every table function that reaches outside the
+// server and must match as a whole name. Longest name first within a family so
+// Go's leftmost-first alternation picks urlCluster over url, remoteSecure over
+// remote, and so on. Benign table functions (numbers, values, generateRandom,
+// dictionary, view, merge, input, format, null, zeros, loop, mergeTreeIndex)
+// are not listed.
+var bitqueryForbiddenExact = []string{
 	// HTTP and cross-server reads
-	"url", "urlCluster",
-	"remote", "remoteSecure",
-	"cluster", "clusterAllReplicas",
+	"urlCluster", "url",
+	"remoteSecure", "remote",
+	"clusterAllReplicas", "cluster",
 	// other databases
 	"mysql", "postgresql", "redis", "mongodb", "sqlite", "odbc", "jdbc",
 	"arrowFlight", "ytsaurus",
-	// object stores and files
-	"s3", "s3Cluster", "gcs", "oss", "cosn",
-	"azureBlobStorage", "azureBlobStorageCluster",
-	"hdfs", "hdfsCluster",
-	"file", "fileCluster",
-	"iceberg", "icebergS3", "icebergAzure", "icebergHDFS", "icebergLocal",
-	"icebergCluster", "icebergS3Cluster", "icebergAzureCluster", "icebergHDFSCluster",
-	"deltaLake", "deltaLakeCluster", "deltaLakeS3", "deltaLakeAzure", "deltaLakeLocal",
-	"hudi", "hudiCluster",
-	"paimon", "paimonS3", "paimonCluster",
-	// local processes
-	"executable", "executablePool",
+	// object stores without a growing variant family
+	"oss", "cosn",
+	// files and local processes
+	"fileCluster", "file", "executablePool", "executable",
 }
 
-// bitqueryForbiddenCall matches a forbidden name (as a whole identifier, case
-// insensitive — ClickHouse resolves table functions case-insensitively) followed
-// by `(`, after literals, comments and identifier quotes are gone.
-var bitqueryForbiddenCall = regexp.MustCompile(`(?i)\b(` + strings.Join(bitqueryForbiddenTableFunctions, "|") + `)\s*\(`)
+// bitqueryForbiddenPrefixes are families whose names keep gaining variants
+// (icebergLocalCluster, deltaLakeS3Cluster, s3Cluster, azureBlobStorageCluster,
+// hiveCluster, ...): any name that STARTS with one of these and is followed by
+// `(` is refused, so a new variant needs no code change. None of ClickHouse's
+// scalar functions starts with one of these and is called as a table function.
+var bitqueryForbiddenPrefixes = []string{
+	"s3", "gcs", "hdfs", "azureBlobStorage",
+	"iceberg", "deltaLake", "hudi", "paimon", "hive",
+}
 
-// BitqueryForbiddenTableFunction reports whether statement calls a table
-// function from bitqueryForbiddenTableFunctions and returns that name as the
-// caller wrote it (without the parenthesis).
+// bitqueryWS is ClickHouse's whitespace between a function name and its `(`.
+// Go's \s omits the vertical tab, which ClickHouse treats as whitespace, so it
+// is listed explicitly.
+const bitqueryWS = `[ \t\n\v\f\r]*`
+
+// bitqueryForbiddenCall matches an exact forbidden name or a forbidden-prefix
+// name followed by `(`, case-insensitively (ClickHouse resolves table functions
+// case-insensitively).
+var bitqueryForbiddenCall = regexp.MustCompile(
+	`(?i)(\b(?:` + strings.Join(bitqueryForbiddenExact, "|") + `)|\b(?:` +
+		strings.Join(bitqueryForbiddenPrefixes, "|") + `)\w*)` + bitqueryWS + `\(`)
+
+// bitqueryForbiddenSetting matches a per-query setting whose value is parsed as
+// SQL (and so can carry a forbidden table function inside a string literal this
+// check strips). None of our tools set either.
+var bitqueryForbiddenSetting = regexp.MustCompile(`(?i)\b(additional_table_filters|additional_result_filter)\b`)
+
+// BitqueryForbiddenTableFunction reports whether statement calls a forbidden
+// table function and returns the name as the caller wrote it (without the
+// parenthesis). It does not catch the setting vector or an escaped identifier;
+// BitqueryRefuseSQL is the full check the sources call.
 func BitqueryForbiddenTableFunction(statement string) (string, bool) {
-	m := bitqueryForbiddenCall.FindStringSubmatch(bitqueryStripSQL(statement))
+	stripped, _ := bitqueryStripSQL(statement)
+	m := bitqueryForbiddenCall.FindStringSubmatch(stripped)
 	if m == nil {
 		return "", false
 	}
 	return m[1], true
 }
 
-// BitqueryTableFunctionRefused is the caller-facing error for a refused
-// statement: an agent error (the request was wrong, not the server), naming the
+// BitqueryRefuseSQL returns an agent error when statement reaches outside the
+// server — a forbidden table function, a backslash-escaped quoted identifier
+// (which could hide a forbidden name), or a setting that carries a subquery —
+// and nil otherwise. The sources call it before they send anything.
+func BitqueryRefuseSQL(statement string) *AgentError {
+	stripped, escapedIdent := bitqueryStripSQL(statement)
+	if escapedIdent {
+		// A quoted identifier that holds a backslash escape is refused whatever
+		// follows: a textual check cannot safely reproduce ClickHouse's decoding,
+		// and nothing of ours writes such a name.
+		return bitqueryRefuse("an escaped identifier")
+	}
+	if m := bitqueryForbiddenCall.FindStringSubmatch(stripped); m != nil {
+		return BitqueryTableFunctionRefused(m[1])
+	}
+	if m := bitqueryForbiddenSetting.FindStringSubmatch(stripped); m != nil {
+		return bitqueryRefuse("the setting " + m[1])
+	}
+	return nil
+}
+
+// BitqueryTableFunctionRefused is the caller-facing error for a refused table
+// function: an agent error (the request was wrong, not the server), naming the
 // function and nothing of the statement itself.
 func BitqueryTableFunctionRefused(name string) *AgentError {
-	return NewAgentError(fmt.Sprintf("invalid request: the table function %s() is not available through this tool; query the data tables of this database only", name), nil)
+	return bitqueryRefuse("the table function " + name + "()")
+}
+
+// bitqueryRefuse builds the refusal message. what names only the forbidden
+// construct, never any part of the statement (the log and ELK must not carry a
+// caller's hosts or tokens).
+func bitqueryRefuse(what string) *AgentError {
+	return NewAgentError(fmt.Sprintf("invalid request: %s is not available through this tool; query the data tables of this database only", what), nil)
 }
 
 // bitqueryStripSQL returns statement with every string literal replaced by a
-// space, comments removed, and the quotes of quoted identifiers dropped, so that
-// `url`(...) and "url"(...) read as url(...) and 'url(' inside a literal does
-// not. It handles ClickHouse's lexical forms: '...' with \' and ” escapes,
-// "..." and `...` identifiers with the same escapes, $tag$...$tag$ heredocs,
-// -- and # line comments, and /* */ block comments (unterminated forms run to
-// the end of the text).
-func bitqueryStripSQL(statement string) string {
+// space, comments removed, and quoted identifiers reduced to their name (so
+// `url`(...) and "url"(...) read as url(...), while 'url(' in a literal does
+// not). escapedIdent is true when a closed quoted identifier held a backslash:
+// ClickHouse decodes `\x75rl` to url, which a textual check cannot safely
+// reproduce, so the caller refuses the whole statement. It handles ClickHouse's
+// lexical forms: '...' with \' and ” escapes, "..." and `...` identifiers with
+// the same escapes, $tag$...$tag$ heredocs, -- and # line comments, and /* */
+// block comments (unterminated forms run to the end of the text).
+func bitqueryStripSQL(statement string) (stripped string, escapedIdent bool) {
 	var b strings.Builder
 	b.Grow(len(statement))
 	s := statement
@@ -104,11 +156,17 @@ func bitqueryStripSQL(statement string) string {
 			i = bitquerySkipQuoted(s, i, c)
 			b.WriteByte(' ')
 		case c == '"' || c == '`':
-			// quoted identifier: keep the content, drop the quotes
+			// quoted identifier: keep the name, drop the quotes
 			end := bitquerySkipQuoted(s, i, c)
 			if end-1 > i && s[end-1] == c {
-				// closed: keep the name so `url`(...) still reads as url(...)
-				b.WriteString(s[i+1 : end-1])
+				name := s[i+1 : end-1]
+				if strings.IndexByte(name, '\\') >= 0 {
+					// an escape could hide a forbidden name; the statement is refused
+					escapedIdent = true
+					b.WriteByte(' ')
+				} else {
+					b.WriteString(name)
+				}
 			} else {
 				// unterminated: ClickHouse rejects the statement; drop the rest
 				b.WriteByte(' ')
@@ -146,7 +204,7 @@ func bitqueryStripSQL(statement string) string {
 			i++
 		}
 	}
-	return b.String()
+	return b.String(), escapedIdent
 }
 
 // bitquerySkipQuoted returns the index just past the quoted token that starts

@@ -84,12 +84,14 @@ type Config struct {
 	// rand:rand:client:user:payer:plan:server. Set on sources pointing at the legacy
 	// *.api-cluster.local ClickHouse (btc/solana).
 	LegacyBillingPaths string `yaml:"bitqueryLegacyBillingPaths"`
-	// Bitquery: when true, the request body (and a `query` URL parameter) is
-	// treated as ClickHouse SQL and refused when it calls a table function that
-	// reaches outside the server — url(), remote(), redis(), s3(), file(), ...
-	// (see util.BitqueryForbiddenTableFunction). Set on every source that fronts
-	// a ClickHouse HTTP endpoint and carries a raw-SQL tool.
-	ForbidTableFunctions bool `yaml:"bitqueryForbidTableFunctions"`
+	// Bitquery: the request body (and a `query` URL parameter) is treated as
+	// ClickHouse SQL and refused when it reaches outside the server — url(),
+	// remote(), redis(), s3(), file(), a backslash-escaped identifier or a
+	// subquery-bearing setting (see util.BitqueryRefuseSQL). Every http source
+	// here fronts a ClickHouse HTTP endpoint, so it is ON unless a source sets
+	// `bitqueryForbidTableFunctions: false` (a non-ClickHouse endpoint): nil
+	// (the default) and true forbid, false opts out.
+	ForbidTableFunctions *bool `yaml:"bitqueryForbidTableFunctions"`
 }
 
 func (r Config) SourceConfigType() string {
@@ -216,9 +218,11 @@ func (s *Source) Client() *http.Client {
 }
 
 func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error) {
-	// Bitquery: refuse a forbidden table function before anything is sent.
-	if s.ForbidTableFunctions {
-		if err := s.bitqueryRefuseTableFunctions(req); err != nil {
+	// Bitquery: refuse a statement that reaches outside the server before
+	// anything is sent. On by default; a source opts out with
+	// bitqueryForbidTableFunctions: false.
+	if s.ForbidTableFunctions == nil || *s.ForbidTableFunctions {
+		if err := s.bitqueryRefuseTableFunctions(ctx, req); err != nil {
 			return nil, err
 		}
 	}
@@ -275,29 +279,40 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 	return result, nil
 }
 
-// bitqueryRefuseTableFunctions checks the SQL a request carries — its body
-// (ClickHouse reads the statement from a POST body) and its `query` URL
-// parameter (the GET form) — against util.BitqueryForbiddenTableFunction. The
-// body is read once and put back so the request can still be sent.
-func (s *Source) bitqueryRefuseTableFunctions(req *http.Request) error {
-	if q := req.URL.Query().Get("query"); q != "" {
-		if fn, ok := util.BitqueryForbiddenTableFunction(q); ok {
-			return util.BitqueryTableFunctionRefused(fn)
+// bitqueryRefuseTableFunctions checks the SQL a request carries against
+// util.BitqueryRefuseSQL before it is sent. ClickHouse takes the statement from
+// the `query` URL parameter and the POST body and concatenates them, so the two
+// are checked together as well as apart (a name split across them cannot slip
+// through). The body is read once and put back so the first send still works;
+// req.GetBody is left as it was, so whether a retry can reproduce the body
+// (and therefore happens at all) is unchanged. The log line names the construct
+// only, never the statement.
+func (s *Source) bitqueryRefuseTableFunctions(ctx context.Context, req *http.Request) error {
+	query := req.URL.Query().Get("query")
+	var body []byte
+	if req.Body != nil && req.Body != http.NoBody {
+		b, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return fmt.Errorf("unable to read request body: %w", err)
 		}
+		body = b
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
 	}
-	if req.Body == nil || req.Body == http.NoBody {
+	if query == "" && len(body) == 0 {
 		return nil
 	}
-	body, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
-	if err != nil {
-		return fmt.Errorf("unable to read request body: %w", err)
-	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	req.ContentLength = int64(len(body))
-	if fn, ok := util.BitqueryForbiddenTableFunction(string(body)); ok {
-		return util.BitqueryTableFunctionRefused(fn)
+	// ClickHouse appends the body to the `query` parameter; check each part and
+	// the join (a newline keeps two statements from fusing into one token).
+	for _, sql := range []string{query, string(body), query + "\n" + string(body)} {
+		if refusal := util.BitqueryRefuseSQL(sql); refusal != nil {
+			if logger, err := util.LoggerFromContext(ctx); err == nil {
+				logger.WarnContext(ctx, "refused a statement that reaches outside the server",
+					"source", s.Name, "reason", refusal.Error())
+			}
+			return refusal
+		}
 	}
 	return nil
 }

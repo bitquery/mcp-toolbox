@@ -38,11 +38,14 @@ func bitqueryGuardedSource(t *testing.T, baseURL string, forbid bool) *Source {
 			BaseURL:              baseURL,
 			ReturnFullError:      true,
 			AllowPrivateNetworks: true,
-			ForbidTableFunctions: forbid,
+			ForbidTableFunctions: &forbid,
 		},
 		client: nethttp.DefaultClient,
 	}
 }
+
+// bitqueryBoolPtr returns a pointer to b, for the *bool config field.
+func bitqueryBoolPtr(b bool) *bool { return &b }
 
 func TestBitqueryForbidTableFunctionsRefusesBody(t *testing.T) {
 	var hits int32
@@ -130,7 +133,7 @@ func TestBitqueryForbidTableFunctionsPassesPlainSQL(t *testing.T) {
 	}
 }
 
-func TestBitqueryForbidTableFunctionsOffByDefault(t *testing.T) {
+func TestBitqueryForbidTableFunctionsOffWhenDisabled(t *testing.T) {
 	var hits int32
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -139,7 +142,7 @@ func TestBitqueryForbidTableFunctionsOffByDefault(t *testing.T) {
 	defer server.Close()
 
 	ctx, _ := bitqueryTestContext(t)
-	source := bitqueryGuardedSource(t, server.URL, false)
+	source := bitqueryGuardedSource(t, server.URL, false) // explicit opt-out
 	req, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, server.URL+bitqueryTestQuery,
 		strings.NewReader("SELECT * FROM url('http://a','RawBLOB','d String')"))
 	if err != nil {
@@ -150,5 +153,31 @@ func TestBitqueryForbidTableFunctionsOffByDefault(t *testing.T) {
 	}
 	if atomic.LoadInt32(&hits) != 1 {
 		t.Fatalf("the request was sent %d time(s), want 1", hits)
+	}
+}
+
+func TestBitqueryForbidTableFunctionsOnByDefault(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		atomic.AddInt32(&hits, 1)
+	}))
+	defer server.Close()
+
+	// A source that sets no bitqueryForbidTableFunctions: the guard is on.
+	ctx, _ := bitqueryTestContext(t)
+	source := &Source{Config: Config{Name: "clickhouse-eth-http", Type: SourceType, BaseURL: server.URL, AllowPrivateNetworks: true}, client: nethttp.DefaultClient}
+	if source.ForbidTableFunctions != nil {
+		t.Fatalf("expected the field to default to nil")
+	}
+	req, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, server.URL+bitqueryTestQuery,
+		strings.NewReader("SELECT * FROM url('http://169.254.169.254/','RawBLOB','d String')"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = source.RunRequest(ctx, req); err == nil || !strings.Contains(err.Error(), "url()") {
+		t.Fatalf("expected a url() refusal with the guard on by default, got %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Fatalf("the request was sent %d time(s); the default-on guard must refuse it", hits)
 	}
 }

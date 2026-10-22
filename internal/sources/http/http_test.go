@@ -103,7 +103,7 @@ func TestParseFromYamlHttp(t *testing.T) {
 					BaseURL:              "http://test_server/",
 					Timeout:              "30s",
 					AllowPrivateNetworks: true,
-					ForbidTableFunctions: true,
+					ForbidTableFunctions: bitqueryBoolPtr(true),
 				},
 			},
 		},
