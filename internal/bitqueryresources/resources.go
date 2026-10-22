@@ -114,8 +114,9 @@ var builtins = load([]Resource{
 		Title:       "Flow Graph",
 		Description: "Interactive graph of the value flows between addresses.",
 		MimeType:    AppMimeType,
-		UI:          &UIMeta{},
-		file:        "static/flow-graph.html",
+		// Exports are copied to the clipboard: the sandbox grants no downloads.
+		UI:   &UIMeta{Permissions: &Permissions{ClipboardWrite: &Permission{}}},
+		file: "static/flow-graph.html",
 	},
 })
 

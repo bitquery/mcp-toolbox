@@ -2,14 +2,15 @@
 
 `flow-graph.html` is one self-contained page that draws a `flow_graph/1` document as a graph, a Sankey
 and a table. Every script and style is inline: it fetches nothing, loads no font and sends no analytics.
-It is meant to be embedded in the server (for example with `go:embed`) and served two ways:
+It lives at `internal/bitqueryresources/static/flow-graph.html`, embedded in the server with `go:embed`
+(only the page goes in that folder: the whole folder is embedded), and is meant to be served two ways:
 
 - as the MCP Apps view `ui://bitquery/flow-graph`, `mimeType: text/html;profile=mcp-app`;
 - as the hosted read-only page behind `view_url`.
 
 | file | what it is |
 |---|---|
-| `flow-graph.html` | the page (about 760 KB, of which vis-network is 652 KB) |
+| `flow-graph.html` (in `internal/bitqueryresources/static/`) | the page (about 760 KB, of which vis-network is 652 KB) |
 | `fixture-eth.json` | a synthetic `flow_graph/1` document that exercises every path (below) |
 
 ## Data modes

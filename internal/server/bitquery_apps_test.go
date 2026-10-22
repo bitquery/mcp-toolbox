@@ -246,7 +246,8 @@ func TestBitqueryAppsEveryVersion(t *testing.T) {
 					t.Fatalf("%s resources/list = %s", url, asJSON(t, res))
 				}
 				flow := list[0].(map[string]any)
-				want := map[string]any{"uri": flowGraphURI, "name": "flow-graph", "description": "Interactive graph of the value flows between addresses.", "mimeType": "text/html;profile=mcp-app"}
+				want := map[string]any{"uri": flowGraphURI, "name": "flow-graph", "description": "Interactive graph of the value flows between addresses.", "mimeType": "text/html;profile=mcp-app",
+					"_meta": map[string]any{"ui": map[string]any{"permissions": map[string]any{"clipboardWrite": map[string]any{}}}}}
 				if hasTitle {
 					want["title"] = "Flow Graph"
 				}
@@ -266,8 +267,8 @@ func TestBitqueryAppsEveryVersion(t *testing.T) {
 			if item["uri"] != flowGraphURI || item["mimeType"] != "text/html;profile=mcp-app" || !strings.HasPrefix(item["text"].(string), "<!doctype html>") {
 				t.Errorf("resources/read = %s", asJSON(t, res))
 			}
-			if _, ok := item["_meta"]; ok {
-				t.Errorf("flow-graph content carries _meta %s", asJSON(t, item["_meta"]))
+			if got := asJSON(t, item["_meta"]); got != `{"ui":{"permissions":{"clipboardWrite":{}}}}` {
+				t.Errorf("flow-graph content _meta = %s", got)
 			}
 			_, res = c.call("resources/read", map[string]any{"uri": "ui://test/csp"})
 			item = res["result"].(map[string]any)["contents"].([]any)[0].(map[string]any)

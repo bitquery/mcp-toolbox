@@ -38,9 +38,14 @@ func TestFlowGraph(t *testing.T) {
 	if strings.Contains(r.Text, "\r") {
 		t.Error("Text has a carriage return")
 	}
-	// Safe defaults: nothing beyond the host's restrictive policy is asked for.
-	if r.Meta() != nil {
-		t.Errorf("Meta() = %v, want nil", r.Meta())
+	// No outside origin (the host's restrictive policy stands); only the
+	// clipboard is asked for, because exports are copied.
+	b, err := json.Marshal(r.Meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"ui":{"permissions":{"clipboardWrite":{}}}}`; string(b) != want {
+		t.Errorf("Meta() = %s, want %s", b, want)
 	}
 	if byURI, ok := BuiltinByURI(r.URI); !ok || byURI.Name != r.Name {
 		t.Errorf("BuiltinByURI(%q) = %+v, %v", r.URI, byURI, ok)
