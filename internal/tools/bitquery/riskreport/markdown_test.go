@@ -76,7 +76,18 @@ func TestMarkdownBoundedOnManyLookalikes(t *testing.T) {
 	if i := strings.Index(md, "2026-10-01T00:00:00Z"); i < 0 || i >= 500 {
 		t.Errorf("data_as_of at byte %d, want within the first 500", i)
 	}
-	if !strings.Contains(md, "poisoning: 1053 look-alike(s)") {
+	if !strings.Contains(md, "poisoning: found (1053 look-alike(s))") {
 		t.Errorf("markdown missing the poisoning headline:\n%s", md)
+	}
+	// Every flag is listed in the fixed order, direct sanctions first, with its
+	// status word (none translated to yes/no).
+	for _, want := range []string{"- direct sanctions: not_found", "- risky dust: not_found",
+		"- other-asset direct risk: not_found", "- pass-through: not_found", "- frozen: not_evaluated"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown Flags section missing %q:\n%s", want, md)
+		}
+	}
+	if di, pi := strings.Index(md, "- direct sanctions:"), strings.Index(md, "- poisoning:"); di < 0 || pi < 0 || di > pi {
+		t.Errorf("direct sanctions must lead the flags, before poisoning (direct at %d, poisoning at %d)", di, pi)
 	}
 }

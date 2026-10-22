@@ -53,6 +53,14 @@ func (t appsStructuredTool) Invoke(context.Context, sources.Source, parameters.P
 	}, nil
 }
 
+// appsTextTool returns a rendered document as a tools.TextResult: the handler
+// sends it as the one text item verbatim, not JSON-encoded.
+type appsTextTool struct{ testutils.MockTool }
+
+func (appsTextTool) Invoke(context.Context, sources.Source, parameters.ParamValues, tools.AccessToken) (any, util.ToolboxError) {
+	return tools.TextResult{Text: "# Doc\nline"}, nil
+}
+
 func appsMockTool(t *testing.T, cfg testutils.MockToolConfig) testutils.MockTool {
 	t.Helper()
 	cfg.Type = "mock-tool"
@@ -76,9 +84,10 @@ func appsPrimitives(t *testing.T) (map[string]tools.Tool, map[string]prompts.Pro
 		"flow_page": appsStructuredTool{
 			MockTool: appsMockTool(t, testutils.MockToolConfig{ConfigBase: tools.ConfigBase{Name: "flow_page", Description: "next page", BitqueryUI: &tools.ToolUI{Visibility: []string{tools.UIVisibilityApp}}}}),
 		},
+		"flow_doc": appsTextTool{appsMockTool(t, testutils.MockToolConfig{ConfigBase: tools.ConfigBase{Name: "flow_doc", Description: "a document"}})},
 	}
 	groups := map[string]group.Group{
-		"":     group.NewGroup(group.GroupConfig{Name: "", ToolNames: []string{"flow_auth", "flow_edges", "flow_page", "no_params"}}),
+		"":     group.NewGroup(group.GroupConfig{Name: "", ToolNames: []string{"flow_auth", "flow_edges", "flow_page", "flow_doc", "no_params"}}),
 		"maps": group.NewGroup(group.GroupConfig{Name: "maps", ToolNames: []string{"flow_edges"}}),
 	}
 	return toolsMap, map[string]prompts.Prompt{}, groups
@@ -235,6 +244,19 @@ func TestBitqueryAppsEveryVersion(t *testing.T) {
 			result = res["result"].(map[string]any)
 			if got := asJSON(t, result["content"]); got != `[{"text":"{\"edges\":[{\"from\":\"a\",\"to\":\"b\",\"value\":2.5}]}","type":"text"}]` {
 				t.Errorf("app-only tool content = %s", got)
+			}
+
+			// A tools.TextResult is the one text item verbatim — not JSON-encoded,
+			// which would wrap a rendered document in quotes with its newlines
+			// escaped (a plain string element still is, as flow_edges shows above).
+			// The same in every protocol version, and no structured content.
+			_, res = c.call("tools/call", map[string]any{"name": "flow_doc"})
+			result = res["result"].(map[string]any)
+			if got := asJSON(t, result["content"]); got != `[{"text":"# Doc\nline","type":"text"}]` {
+				t.Errorf("TextResult content = %s", got)
+			}
+			if _, has := result["structuredContent"]; has {
+				t.Errorf("TextResult carried structuredContent")
 			}
 
 			// resources/list, the same on a group endpoint.

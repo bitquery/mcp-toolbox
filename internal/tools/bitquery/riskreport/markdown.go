@@ -62,6 +62,9 @@ func hopsNote(h *int) string {
 	if h == nil {
 		return ""
 	}
+	if *h == 1 {
+		return " [1 hop]"
+	}
 	return fmt.Sprintf(" [%d hops]", *h)
 }
 
@@ -95,8 +98,13 @@ func markdownReport(rep *reportOut) string {
 	p := &rep.Params
 	fmt.Fprintf(&b, "# Address risk report\n\n")
 	fmt.Fprintf(&b, "- Chain: %s\n- Address: `%s`\n", rep.Summary.Chain, rep.Summary.Address)
-	fmt.Fprintf(&b, "- Data as of: %s | view: %s | complete: %t | max hops reached: %d\n\n",
-		p.DataAsOf, p.View, p.Complete, p.MaxHopsReached)
+	// max hops reached is meaningful only in view all; the direct view is always
+	// one hop, so it is left off there.
+	head := fmt.Sprintf("- Data as of: %s | view: %s | complete: %t", p.DataAsOf, p.View, p.Complete)
+	if p.View == "all" {
+		head += fmt.Sprintf(" | max hops reached: %d", p.MaxHopsReached)
+	}
+	fmt.Fprintf(&b, "%s\n\n", head)
 
 	sc := rep.Score
 	fmt.Fprintf(&b, "## Score: %.1f / 100 (%s)\n\n", sc.Value, band(sc.Value))
@@ -105,6 +113,13 @@ func markdownReport(rep *reportOut) string {
 	if sc.DirectFloorFrom != nil {
 		fmt.Fprintf(&b, "Direct floor set by %v (%v, %v).\n\n",
 			sc.DirectFloorFrom["entity"], sc.DirectFloorFrom["entity_type"], sc.DirectFloorFrom["direction"])
+	}
+	if len(sc.TopDrivers) > 0 {
+		fmt.Fprintf(&b, "Drivers (share of the scored flow → contribution to the score):\n")
+		for _, d := range sc.TopDrivers {
+			fmt.Fprintf(&b, "- %s (%s): %g%% → %g\n", d.EntityType, d.Direction, d.SharePct, d.Contribution)
+		}
+		b.WriteString("\n")
 	}
 
 	a := rep.Summary.Asset
@@ -116,6 +131,9 @@ func markdownReport(rep *reportOut) string {
 	} else {
 		fmt.Fprintf(&b, "Attributed %.2f%% of analysed flow to %d labelled connection(s).\n",
 			rep.Summary.AttributedPct, len(rep.Connections))
+	}
+	if u := unattributedLine(rep, a.Symbol); u != "" {
+		fmt.Fprintf(&b, "%s\n", u)
 	}
 	b.WriteString("\n")
 
@@ -175,43 +193,96 @@ func markdownReport(rep *reportOut) string {
 	return b.String()
 }
 
-// writeFlagHeadlines writes the flags as headline counts, never the per-flag
-// evidence or the look-alikes (those are in the structured object).
-func writeFlagHeadlines(b *strings.Builder, rep *reportOut) {
-	counts := map[string]int{}
-	poisoning := -1
-	for _, f := range rep.Flags {
-		counts[f.Type]++
-		if f.Type == "poisoning" {
-			poisoning = intOf(f.Detail["count"])
+// unattributedLine sums the unattributed amounts per direction for the Exposure
+// section, so a reader sees how much of the flow reached no labelled entity; ""
+// when no direction is recorded.
+func unattributedLine(rep *reportOut, symbol string) string {
+	var parts []string
+	for _, d := range []string{"received", "sent"} {
+		if v, ok := rep.Unattributed[d]; ok {
+			parts = append(parts, fmt.Sprintf("%s %s", d, v))
 		}
 	}
-	if n := counts["direct_sanctions"]; n > 0 {
-		fmt.Fprintf(b, "- direct sanctions: %d\n", n)
+	if len(parts) == 0 {
+		return ""
 	}
-	if n := counts["risky_dust"]; n > 0 {
-		fmt.Fprintf(b, "- risky dust: %d\n", n)
-	}
-	if n := counts["other_asset_direct_risk"]; n > 0 {
-		fmt.Fprintf(b, "- other-asset direct risk: %d\n", n)
-	}
-	if poisoning >= 0 {
-		fmt.Fprintf(b, "- poisoning: %d look-alike(s)\n", poisoning)
-	}
-	fmt.Fprintf(b, "- pass-through: %s\n", flagWord(rep.Params.FlagsStatus["pass_through"]))
-	fmt.Fprintf(b, "- frozen: %s\n", flagWord(rep.Params.FlagsStatus["frozen"]))
+	return fmt.Sprintf("Unattributed %s: %s.", symbol, strings.Join(parts, ", "))
 }
 
-// flagWord turns a flags_status value into a word for the human report.
-func flagWord(status string) string {
-	switch status {
-	case "found":
-		return "yes"
-	case "not_found":
-		return "no"
-	case "":
-		return "no"
-	default:
-		return status
+// flagOrder is the fixed order the human report lists the flags in, each with a
+// readable label; direct sanctions first.
+var flagOrder = []struct{ key, label string }{
+	{"direct_sanctions", "direct sanctions"},
+	{"risky_dust", "risky dust"},
+	{"other_asset_direct_risk", "other-asset direct risk"},
+	{"poisoning", "poisoning"},
+	{"pass_through", "pass-through"},
+	{"frozen", "frozen"},
+}
+
+// writeFlagHeadlines writes every flag in the fixed order with its status word
+// (found / not_found / not_evaluated, as recorded), and for a flag that fired a
+// short headline from its evidence. The per-flag detail and the look-alikes
+// stay in the structured object.
+func writeFlagHeadlines(b *strings.Builder, rep *reportOut) {
+	byType := map[string][]flagOut{}
+	for _, f := range rep.Flags {
+		byType[f.Type] = append(byType[f.Type], f)
 	}
+	for _, fo := range flagOrder {
+		status := flagStatusOf(rep, fo.key, byType)
+		line := fmt.Sprintf("- %s: %s", fo.label, status)
+		if status == "found" {
+			if d := flagHeadlineDetail(fo.key, byType[fo.key]); d != "" {
+				line += " (" + d + ")"
+			}
+		}
+		fmt.Fprintf(b, "%s\n", line)
+	}
+}
+
+// flagStatusOf is a flag's status for the human report: the recorded
+// flags_status when set, else derived from whether the flag fired (frozen,
+// never a flag row, defaults to not_evaluated).
+func flagStatusOf(rep *reportOut, key string, byType map[string][]flagOut) string {
+	if s := rep.Params.FlagsStatus[key]; s != "" {
+		return s
+	}
+	if len(byType[key]) > 0 {
+		return "found"
+	}
+	if key == "frozen" {
+		return "not_evaluated"
+	}
+	return "not_found"
+}
+
+// flagHeadlineDetail is a one-line summary of a fired flag, from its first row
+// (with a count of any others): the look-alike count for poisoning, and the
+// entity type, amount and direction for a labelled-counterparty flag.
+func flagHeadlineDetail(key string, fs []flagOut) string {
+	if len(fs) == 0 {
+		return ""
+	}
+	switch key {
+	case "poisoning":
+		return fmt.Sprintf("%d look-alike(s)", intOf(fs[0].Detail["count"]))
+	case "direct_sanctions", "risky_dust", "other_asset_direct_risk":
+		d := fs[0].Detail
+		et, _ := d["entity_type"].(string)
+		dir, _ := d["direction"].(string)
+		amt, _ := d["amount"].(string)
+		s := et
+		if amt != "" {
+			s += ", " + amt
+		}
+		if dir != "" {
+			s += " (" + dir + ")"
+		}
+		if len(fs) > 1 {
+			s += fmt.Sprintf(" +%d more", len(fs)-1)
+		}
+		return s
+	}
+	return ""
 }

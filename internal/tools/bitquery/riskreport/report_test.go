@@ -321,9 +321,10 @@ func edgeRow(dir, addr, raw, rawMin, rawMax string, n int, dirTotals [4]string, 
 		"Dir_Counterparties": dirTotals[0], "Dir_Transfers": dirTotals[1], "Dir_Raw": dirTotals[2], "Dir_Raw_Above_Min": dirTotals[3]}
 }
 
-// decode returns a result's report map, whichever format produced it: the
-// markdown format carries the whole report as structured content, the json
-// format is the report itself.
+// decode returns a result's report map. The structural tests read the json
+// format (mustParams defaults to it), which is the report object itself; the
+// markdown format is a text document, exercised separately by
+// TestFormatJSONAndMarkdown.
 func decode(t *testing.T, v any) map[string]any {
 	t.Helper()
 	if items, structured := tools.SplitResult(v); structured != nil {
@@ -518,8 +519,9 @@ func TestNoExposureStillPointsAtFlags(t *testing.T) {
 }
 
 // P1-1: format json returns the report object unchanged (no structured
-// envelope); the default (markdown) returns a concise text document plus the
-// whole report as structured content; an unknown format is refused.
+// envelope); the default (markdown) returns a concise text document as a raw
+// text item (a tools.TextResult, no structured content); an unknown format is
+// refused.
 func TestFormatJSONAndMarkdown(t *testing.T) {
 	newChain := func() *fakeChain {
 		return &fakeChain{
@@ -564,7 +566,14 @@ func TestFormatJSONAndMarkdown(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("markdown returned %d content items, want 1", len(items))
 	}
-	md, _ := items[0].(string)
+	// The one item is a tools.TextResult, so the handler sends it as text
+	// verbatim — not a plain string, which would be JSON-encoded into a quoted
+	// literal with escaped newlines.
+	tr, ok := items[0].(tools.TextResult)
+	if !ok {
+		t.Fatalf("markdown item is %T, want tools.TextResult (sent as raw text)", items[0])
+	}
+	md := tr.Text
 	if !strings.Contains(md, "# Address risk report") {
 		t.Errorf("markdown content is not the document:\n%s", md)
 	}

@@ -45,6 +45,18 @@ func (r StructuredResult) items() []any {
 	return r.Content
 }
 
+// TextResult is a result delivered as a single text content item verbatim, with
+// no JSON encoding and no structured content. A []any or any other result has
+// each element JSON-encoded into its text item, so a string element becomes a
+// quoted JSON literal (`"line"`), and a multi-line one keeps its newlines as
+// `\n`. A tool whose result is already prose for the model — a rendered
+// document — returns a TextResult so the text reaches the model and a text-only
+// host as written, not as an escaped JSON string. Only this type opts into the
+// raw path; every other string element stays JSON-encoded as before.
+type TextResult struct {
+	Text string
+}
+
 // SplitResult returns the elements that become a tools/call result's text
 // content items, and its structured object (nil for a plain result).
 func SplitResult(result any) ([]any, map[string]any) {
@@ -54,6 +66,12 @@ func SplitResult(result any) ([]any, map[string]any) {
 	case *StructuredResult:
 		if r != nil {
 			return r.items(), r.Structured
+		}
+	case TextResult:
+		return []any{r}, nil
+	case *TextResult:
+		if r != nil {
+			return []any{*r}, nil
 		}
 	case []any:
 		return r, nil
@@ -71,6 +89,12 @@ func PlainResult(result any) any {
 	case *StructuredResult:
 		if r != nil {
 			return r.items()
+		}
+	case TextResult:
+		return r.Text
+	case *TextResult:
+		if r != nil {
+			return r.Text
 		}
 	}
 	return result

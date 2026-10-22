@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/googleapis/mcp-toolbox/internal/tools"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
 
@@ -480,11 +481,13 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	// structured content: a host that reads structuredContent shows the model
 	// that object and drops the text, so the model would never see the document
 	// (measured on the Claude connector, 2026-10-22). An app that wants the object
-	// asks format=json. The markdown becomes one text content item.
+	// asks format=json. The markdown is a tools.TextResult, so the handler sends
+	// it as the one text content item verbatim — not JSON-encoded, which would
+	// wrap the document in quotes and escape its newlines.
 	if req.format == "json" {
 		return rep, nil
 	}
-	return markdownReport(rep), nil
+	return tools.TextResult{Text: markdownReport(rep)}, nil
 }
 
 // direct builds the direct view of one Tron address.

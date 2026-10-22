@@ -553,8 +553,12 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 
 	for _, d := range sliceRes {
 		text := TextContent{Type: "text"}
-		dM, err := json.Marshal(d)
-		if err != nil {
+		// Bitquery: a tools.TextResult element is a rendered document — send it as
+		// the text item verbatim, not JSON-encoded (which would wrap it in quotes
+		// and escape its newlines). Every other element is JSON-encoded as before.
+		if tr, ok := d.(tools.TextResult); ok {
+			text.Text = tr.Text
+		} else if dM, err := json.Marshal(d); err != nil {
 			text.Text = fmt.Sprintf("fail to marshal: %s, result: %s", err, d)
 		} else {
 			text.Text = string(dM)
