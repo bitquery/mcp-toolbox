@@ -1,0 +1,215 @@
+kind: tool
+name: address_risk_report
+type: bitquery-address-risk-report
+source: tron-src
+chainSources: {tron: tron-src}
+labelsSource: labels-src
+description: Risk report of one address.
+annotations:
+  readOnlyHint: true
+parameters:
+  - name: chain
+    type: string
+    description: Chain of the address.
+    allowedValues: ['^(tron|bitcoin|ethereum)$']
+  - name: address
+    type: string
+    description: The address to report on.
+  - name: asset
+    type: string
+    description: TRX, a token contract, or empty for the main asset.
+    default: ""
+  - name: direction
+    type: string
+    description: both, received or sent.
+    default: both
+  - name: view
+    type: string
+    description: direct (hop 1) or all (the multi-hop search).
+    default: direct
+  - name: format
+    type: string
+    description: json.
+    default: json
+  - name: after_time
+    type: string
+    description: Window start, UTC.
+    default: ""
+  - name: before_time
+    type: string
+    description: Window end, UTC.
+    default: ""
+  - name: min_amount_usd
+    type: float
+    description: Transfers worth this much or less are left out of the connections.
+    default: 100
+  - name: max_hops
+    type: integer
+    description: Depth of the search (view all).
+    default: 2
+  - name: weights
+    type: map
+    description: Partial override of the risk profile.
+    default: {}
+# Order of the profile = the tie-break order: when two types of one address give the same
+# weight x level for a direction, the one listed first wins.
+profile:
+  - {type: Terrorism Financing,        weight: 100, receiving: High,   sending: High}
+  - {type: Sanctions,                  weight: 100, receiving: High,   sending: High}
+  - {type: Child Exploitation,         weight: 100, receiving: High,   sending: High}
+  - {type: Ransom,                     weight: 100, receiving: High,   sending: High}
+  - {type: Darknet Marketplace,        weight: 100, receiving: High,   sending: High}
+  - {type: Darknet Service,            weight: 100, receiving: High,   sending: High}
+  - {type: Mixing Service,             weight: 100, receiving: High,   sending: High}
+  - {type: Illegal Service,            weight: 100, receiving: High,   sending: High}
+  - {type: Stolen Coins,               weight: 100, receiving: High,   sending: None}
+  - {type: Scam,                       weight: 100, receiving: High,   sending: Low}
+  - {type: Fraudulent Exchange,        weight: 100, receiving: High,   sending: None}
+  - {type: Enforcement Action,         weight: 75,  receiving: High,   sending: High}
+  - {type: Gambling,                   weight: 75,  receiving: High,   sending: High}
+  - {type: Exchange Unlicensed,        weight: 60,  receiving: Medium, sending: Low}
+  - {type: P2P Exchange Unlicensed,    weight: 60,  receiving: Medium, sending: Low}
+  - {type: Exchange (licence unknown), weight: 60,  receiving: Medium, sending: Low}
+  - {type: ATM,                        weight: 50,  receiving: Low,    sending: None}
+  - {type: Liquidity Pools,            weight: 50,  receiving: Low,    sending: None}
+  - {type: Online Wallet,              weight: 25,  receiving: Low,    sending: None}
+  - {type: Other,                      weight: 25,  receiving: Low,    sending: None}
+  - {type: Exchange Licensed,          weight: 10,  receiving: Low,    sending: None}
+  - {type: P2P Exchange Licensed,      weight: 10,  receiving: Low,    sending: None}
+  - {type: Miner,                      weight: 10,  receiving: Low,    sending: None}
+  - {type: Online Marketplace,         weight: 0,   receiving: Low,    sending: None}
+  - {type: Payment Processor,          weight: 0,   receiving: Low,    sending: None}
+  - {type: Seized Assets,              weight: 0,   receiving: Low,    sending: None}
+weight_unattributed: 45
+levels: {High: 1.0, Medium: 0.6, Low: 0.3, None: 0}
+
+# One rule per label row, first match wins. A rule matches on label_type (one or a list), and
+# optionally on chain and on value (RE2, unanchored unless written with ^ / $). It either names
+# an entity type (with an optional subtype) or says evidence_only: the label is printed on the
+# row as evidence, does not stop the branch and does not move a score.
+labelMap:
+  # value patterns that cut across label types
+  - {value: 'terrorist-seizure-',        type: Terrorism Financing, subtype: Seizure order}
+  - {label_type: sanctioned-entity, value: '^israeli-seizure-order-', type: Terrorism Financing, subtype: Seizure order}
+  # sanctions and terrorism
+  - {label_type: sanctioned-entity, value: '^sanctioned-entity-(binance|okx|kucoin|kraken|mexc|btcturk|cryptomus|b2binpay|wallet-in-telegram)$|^gasfree-account$', evidence_only: true}
+  - {label_type: sanctioned-entity,      type: Sanctions}
+  - {label_type: terrorist,              type: Terrorism Financing}
+  - {label_type: government, value: '^central-bank-of-iran', type: Sanctions}
+  - {label_type: government, value: 'seized|confiscated',    type: Seized Assets}
+  - {label_type: government,             type: Other, subtype: Government}
+  # illegal services
+  - {label_type: [issuer-blocked-usdt, issuer-blocked-usdc], type: Illegal Service, subtype: Blocked by issuer}
+  - {label_type: money-laundering, value: '^money-laundering-(kraken|binance)$', evidence_only: true}
+  - {label_type: money-laundering,       type: Illegal Service, subtype: Money laundering}
+  # mixers
+  - {label_type: privacy-protocol, value: '^tails-donation$', type: Other}
+  - {label_type: [mixer, privacy-protocol], type: Mixing Service}
+  # darknet, ransom, theft, scams
+  - {label_type: darknet-market,         type: Darknet Marketplace}
+  - {label_type: ransomware,             type: Ransom}
+  - {label_type: hacker,                 type: Stolen Coins, subtype: Hack}
+  - {label_type: tainted, value: '^tainted-stolen-funds$', type: Stolen Coins, subtype: Tainted}
+  - {label_type: tainted, value: '^tainted-scam$',         type: Scam,         subtype: Tainted}
+  - {label_type: tainted, value: '^tainted-ransomware$',   type: Ransom,       subtype: Tainted}
+  - {label_type: tainted,                evidence_only: true}
+  - {label_type: scam, chain: tron, value: '^scam-(htx|binance|okx)$', evidence_only: true}
+  - {label_type: scam,                   type: Scam}
+  - {label_type: phishing,               type: Scam, subtype: Phishing}
+  - {label_type: risk-flag,              evidence_only: true}
+  # exchanges
+  - {label_type: no-kyc, value: '^no-kyc$', evidence_only: true}
+  - {label_type: no-kyc,                 type: Exchange (licence unknown), subtype: No-KYC swap}
+  # custody services under an exchange or service type: one entity, one row (question 8)
+  - {label_type: [cex-deposit-address, cex-hot-wallet, cex-cold-wallet, proof-of-reserves, service],
+     value: '^(chainup-custody|ceffu)', type: Online Wallet, subtype: Custody}
+  - {label_type: [cex-deposit-address, cex-hot-wallet, cex-cold-wallet, cex-unknown-type, cex-withdrawal-address, proof-of-reserves], type: Exchange (licence unknown)}
+  - {label_type: otc-desk,               type: Exchange (licence unknown), subtype: OTC desk}
+  - {label_type: [dex-router, dex-aggregator], type: P2P Exchange Unlicensed, subtype: DEX}
+  - {label_type: dex-pool,               type: Liquidity Pools}
+  # other services
+  - {label_type: gambling,               type: Gambling}
+  - {label_type: payment-processor,      type: Payment Processor}
+  - {label_type: mining-pool,            type: Miner}
+  - {label_type: e-commerce,             type: Online Marketplace}
+  - {label_type: custodian,              type: Online Wallet}
+  - {label_type: asset-manager, value: 'seized', type: Seized Assets}
+  - {label_type: asset-manager, value: '^(chainup-custody|ceffu)', type: Online Wallet, subtype: Custody}
+  - {label_type: asset-manager,          type: Other, subtype: Asset manager}
+  - {label_type: bridge,                 type: Other, subtype: Bridge}
+  - {label_type: [service, infrastructure, lending-protocol, yield-aggregator, derivatives-protocol,
+                  staking-protocol, liquidity-manager, index-fund, rwa-protocol, synthetics-protocol,
+                  insurance-protocol, launchpad, nft-marketplace, gaming, prediction-market, market-maker,
+                  trading-firm, oracle, validator, mev-builder, mev-bot, governance, dao, airdrop, faucet,
+                  cloud-mining, on-chain-messaging, utility-tool, socialfi, white-hat], type: Other}
+
+# Describe an address, name no owner: never stop a branch, never move a score; printed on the row.
+attributeOnly: [contract, token-contract, dex-factory, first-funder, tron-energy-delegate, high-transacting,
+                eoa-entity, dormant, deployer, proxy, multisig, signer, safe-wallet, account-abstraction-user,
+                mixer-user, platform-user, username, donor, celebrity, team-wallet, nft-collection, burn-address]
+
+# The entity a label names. Connection rows are grouped by (entity type, entity), so the same
+# word under two types never merges (the Bybit exchange and the Bybit hacker stay two rows).
+# Applied to label_value in this order: a value equal to its label_type names no entity;
+# prefixes are removed while one matches (the first in list order each time); the first matching
+# alias names the entity; if none matches,
+# suffixes are removed while one matches and the aliases are tried again; what is left is the
+# entity. An empty alias means "names no entity". A label that names no
+# entity gives the row "<type> (unnamed)", one per address. The row also prints the raw value.
+entityKey:
+  stripPrefix: ['^sanctioned-by-[a-z]+-', '^sanctioned-entity-', '^sanctioned-', '^israeli-seizure-order-',
+                '^terrorist-seizure-', '^risk-flag-', '^money-laundering-', '^scam-', '^terrorist-', '^darknet-',
+                '^ransomware-', '^tainted-']
+  stripSuffix: ['-deposit$', '-hot(-[0-9]+)?$', '-cold(-[0-9]+)?$', '-gas-supplier$', '-withdrawal$',
+                '-wallet$', '-exchange$', '-proof-of-reserves$']
+  alias:
+    # categories and list names, not entities
+    - {match: '^(unspecified|suspicious|sextortion|blackmail|fraud|fraud-tumbler|investment|theft|extortion|giveaway|spam|malware|stolen-funds|scam|ransomware|aml-flag|government-seized|israel|phishing-unspecified)$', entity: ''}
+    - {match: '^banned-by-usd[ct]$',          entity: ''}
+    - {match: '^(uk|ofac)$',                   entity: ''}
+    # names that end in a stripped word
+    - {match: '^well-wallet',                  entity: well-wallet}
+    - {match: '^wallet-in-telegram',           entity: wallet-in-telegram}
+    - {match: '^s-wallet',                     entity: s-wallet}
+    - {match: '^dubai-company-for-exchange',   entity: dubai-company-for-exchange}
+    - {match: '^001k',                         entity: 001k}
+    - {match: '^crypto-com',                   entity: crypto-com}
+    - {match: '^bit-z',                        entity: bit-z}
+    - {match: '^(hacker-|actor-)?(north-korea-)?lazarus-group$', entity: lazarus-group}
+    - {match: '^tornado-cash',                 entity: tornado-cash}
+    - {match: '^railgun',                      entity: railgun}
+    - {match: '^huione-group',                 entity: huione-group}
+    - {match: '^dsj-exchange',                 entity: dsj-exchange}
+    - {match: '^xinbi-guarantee',              entity: xinbi-guarantee}
+    - {match: '^garantex',                     entity: garantex}
+    - {match: '^central-bank-of-iran',         entity: central-bank-of-iran}
+    - {match: '^sim-hyon-sop',                 entity: sim-hyon-sop}
+    - {match: '^(isis-k|isil-khorasan)$',      entity: isis-k}
+    - {match: '^(semenov-roman|roman-semenov(-tornado-cash)?)$', entity: roman-semenov}
+    - {match: '^(mesri-behzad|behzad-mesri)$', entity: behzad-mesri}
+    - {match: '^(peijnenburg-alex-adrianus-martinus|alex-adrianus-martinus-peijnenburg)$', entity: alex-peijnenburg}
+
+# Where a label came from, printed on each row as label_source_class. First match wins.
+labelSources:
+  - {match: '^(ofac|uk-ofsi|eu-sanctions|france-gels|israel-nbctf|japan-mof)$', class: sanctions-list}
+  - {match: 'heuristic',                                   class: heuristic}
+  - {match: '^bitcoinabuse$',                             class: community}
+  - {match: '^workflow:research-',                        class: research}
+  - {match: '^(verified-metasleuth|legacy-verified:)',     class: curated}
+  - {match: '',                                            class: vendor}
+
+# Within one source class, the source listed first names the entity: two lists that name one
+# entity differently (OFAC's xinbi-guarantee, the UK's xinbi-company-limited) give one stable name,
+# and the other list shows in the row's other_sources. Merging such names is left to the labels
+# pipeline; nothing time-dependent decides it.
+sourcePreference: [ofac, uk-ofsi, eu-sanctions, france-gels, israel-nbctf, japan-mof]
+
+thresholds:
+  dust_usd: 5
+  lookalike_amount_cap_usd: 100
+  min_amount_usd: 100
+  native_dust_units: 10
+assetUsd:
+  tron:
+    TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t: 1
+coverageTier: {tron: strong, bitcoin: strong, ethereum: partial}

@@ -1,0 +1,286 @@
+# label_type	chain	label_value	disposition	entity
+asset-manager	bitcoin	blackrock-ibit-bitcoin-etf	Other / Asset manager	blackrock-ibit-bitcoin-etf
+asset-manager	bitcoin	galaxy-digital	Other / Asset manager	galaxy-digital
+asset-manager	bitcoin	franklin-templeton	Other / Asset manager	franklin-templeton
+asset-manager	bitcoin	ceffu-hot	Online Wallet / Custody	ceffu
+asset-manager	bitcoin	wintermute	Other / Asset manager	wintermute
+asset-manager	bitcoin	ceffu-cold	Online Wallet / Custody	ceffu
+asset-manager	bitcoin	b2c2-group	Other / Asset manager	b2c2-group
+asset-manager	bitcoin	grayscale-bitcoin-trust	Other / Asset manager	grayscale-bitcoin-trust
+asset-manager	bitcoin	blackrock	Other / Asset manager	blackrock
+asset-manager	bitcoin	bosera-funds-bosera-hashkey-bitcoin-etf	Other / Asset manager	bosera-funds-bosera-hashkey-bitcoin-etf
+asset-manager	ethereum	chainup-custody-deposit	Online Wallet / Custody	chainup-custody
+asset-manager	ethereum	ceffu-deposit	Online Wallet / Custody	ceffu
+asset-manager	ethereum	chainup-custody-hot	Online Wallet / Custody	chainup-custody
+asset-manager	ethereum	wintermute	Other / Asset manager	wintermute
+asset-manager	ethereum	ceffu-hot	Online Wallet / Custody	ceffu
+asset-manager	ethereum	gotbit-seized-address	Seized Assets	gotbit-seized-address
+asset-manager	ethereum	gotbit	Other / Asset manager	gotbit
+asset-manager	ethereum	grayscale	Other / Asset manager	grayscale
+asset-manager	ethereum	jump-crypto	Other / Asset manager	jump-crypto
+asset-manager	ethereum	wintermute-hot	Other / Asset manager	wintermute
+asset-manager	ethereum	b2c2-group	Other / Asset manager	b2c2-group
+asset-manager	ethereum	indexed-finance-indexed-ndx	Other / Asset manager	indexed-finance-indexed-ndx
+asset-manager	tron	chainup-custody-deposit	Online Wallet / Custody	chainup-custody
+asset-manager	tron	ceffu-deposit	Online Wallet / Custody	ceffu
+asset-manager	tron	chainup-custody-hot	Online Wallet / Custody	chainup-custody
+asset-manager	tron	wintermute-deposit	Other / Asset manager	wintermute
+asset-manager	tron	ceffu-hot	Online Wallet / Custody	ceffu
+asset-manager	tron	wintermute-hot	Other / Asset manager	wintermute
+asset-manager	tron	wintermute	Other / Asset manager	wintermute
+asset-manager	tron	ceffu-gas-supplier	Online Wallet / Custody	ceffu
+asset-manager	tron	alameda-research	Other / Asset manager	alameda-research
+asset-manager	tron	ceffu	Online Wallet / Custody	ceffu
+custodian	bitcoin	cobo	Online Wallet	cobo
+custodian	bitcoin	coinbase-prime-custody	Online Wallet	coinbase-prime-custody
+custodian	bitcoin	tether-lending-collateral-custody	Online Wallet	tether-lending-collateral-custody
+custodian	ethereum	coinbase-prime	Online Wallet	coinbase-prime
+custodian	ethereum	cobo-deposit	Online Wallet	cobo
+custodian	ethereum	cobo-com	Online Wallet	cobo-com
+custodian	ethereum	paxos-deposit	Online Wallet	paxos
+custodian	ethereum	paxos	Online Wallet	paxos
+custodian	ethereum	paxos-hot	Online Wallet	paxos
+custodian	ethereum	paxos-gas-supplier	Online Wallet	paxos
+custodian	ethereum	bitgo	Online Wallet	bitgo
+custodian	ethereum	gemini	Online Wallet	gemini
+custodian	ethereum	coinbase-prime-custody-gas-supplier	Online Wallet	coinbase-prime-custody
+custodian	ethereum	gemini-hot	Online Wallet	gemini
+custodian	ethereum	bitgo-hot	Online Wallet	bitgo
+custodian	tron	cobo-deposit	Online Wallet	cobo
+custodian	tron	cobo-hot	Online Wallet	cobo
+darknet-market	bitcoin	darknet-agora	Darknet Marketplace	agora
+darknet-market	bitcoin	darknet-evolution	Darknet Marketplace	evolution
+darknet-market	bitcoin	darknet-silk-road	Darknet Marketplace	silk-road
+darknet-market	bitcoin	darknet-silk-road-2	Darknet Marketplace	silk-road-2
+darknet-market	bitcoin	darknet-alphabay	Darknet Marketplace	alphabay
+darknet-market	bitcoin	darknet-nucleus	Darknet Marketplace	nucleus
+darknet-market	bitcoin	darknet-abraxas	Darknet Marketplace	abraxas
+darknet-market	bitcoin	darknet-pandora	Darknet Marketplace	pandora
+darknet-market	bitcoin	darknet-sheep	Darknet Marketplace	sheep
+darknet-market	bitcoin	darknet-blackbank	Darknet Marketplace	blackbank
+darknet-market	bitcoin	darknet-middle-earth	Darknet Marketplace	middle-earth
+darknet-market	bitcoin	darknet-blue-sky	Darknet Marketplace	blue-sky
+e-commerce	ethereum	bitrefill-deposit	Online Marketplace	bitrefill
+e-commerce	ethereum	bitrefill-hot	Online Marketplace	bitrefill
+government	bitcoin	government-seized	Seized Assets	(unnamed)
+government	bitcoin	u-s-government-silk-road-doj-confiscated-funds	Seized Assets	u-s-government-silk-road-doj-confiscated-funds
+government	bitcoin	u-s-government-alexandre-cazes-seized-address	Seized Assets	u-s-government-alexandre-cazes-seized-address
+government	bitcoin	u-s-government-ross-ulbricht-seized-funds	Seized Assets	u-s-government-ross-ulbricht-seized-funds
+government	bitcoin	uae-royal-group	Other / Government	uae-royal-group
+government	bitcoin	u-s-government-darkside-ransomware-seized-address	Seized Assets	u-s-government-darkside-ransomware-seized-address
+government	tron	central-bank-of-iran-sanctioned	Sanctions	central-bank-of-iran
+government	tron	central-bank-of-iran	Sanctions	central-bank-of-iran
+government	tron	government-seized	Seized Assets	(unnamed)
+hacker	bitcoin	hacker-dmm-bitcoin	Stolen Coins / Hack	hacker-dmm-bitcoin
+hacker	bitcoin	actor-lazarus-group	Stolen Coins / Hack	lazarus-group
+hacker	bitcoin	hacker-silk-road	Stolen Coins / Hack	hacker-silk-road
+hacker	bitcoin	hacker-flexcoin	Stolen Coins / Hack	hacker-flexcoin
+hacker	bitcoin	hacker-bitcoinica	Stolen Coins / Hack	hacker-bitcoinica
+hacker	bitcoin	hacker-mt-gox-hacker	Stolen Coins / Hack	hacker-mt-gox-hacker
+hacker	bitcoin	hacker-allinvain	Stolen Coins / Hack	hacker-allinvain
+hacker	bitcoin	hacker-kucoin	Stolen Coins / Hack	hacker-kucoin
+hacker	bitcoin	hacker-coinsecure	Stolen Coins / Hack	hacker-coinsecure
+hacker	bitcoin	hacker-mt-gox	Stolen Coins / Hack	hacker-mt-gox
+hacker	ethereum	hacker-upbit-2019	Stolen Coins / Hack	hacker-upbit-2019
+hacker	ethereum	hacker-parity-multisig-bug	Stolen Coins / Hack	hacker-parity-multisig-bug
+hacker	ethereum	hacker-north-korea-lazarus-group	Stolen Coins / Hack	lazarus-group
+hacker	ethereum	hacker	Stolen Coins / Hack	(unnamed)
+hacker	ethereum	hacker-bzx-privkey-exploiter	Stolen Coins / Hack	hacker-bzx-privkey-exploiter
+hacker	ethereum	hacker-lazarus-group	Stolen Coins / Hack	lazarus-group
+hacker	ethereum	hacker-bybit	Stolen Coins / Hack	hacker-bybit
+hacker	ethereum	hacker-bitget	Stolen Coins / Hack	hacker-bitget
+hacker	ethereum	hacker-drift-protocol-exploiter	Stolen Coins / Hack	hacker-drift-protocol-exploiter
+hacker	ethereum	hacker-bnb-bridge-exploiter	Stolen Coins / Hack	hacker-bnb-bridge-exploiter
+hacker	ethereum	hacker-polynetwork-exploiter	Stolen Coins / Hack	hacker-polynetwork-exploiter
+hacker	ethereum	hacker-yearn-ydai-exploiter	Stolen Coins / Hack	hacker-yearn-ydai-exploiter
+hacker	tron	hacker-lazarus-group	Stolen Coins / Hack	lazarus-group
+hacker	tron	hacker	Stolen Coins / Hack	(unnamed)
+hacker	tron	hacker-north-korea-lazarus-group	Stolen Coins / Hack	lazarus-group
+hacker	tron	hacker-bybit	Stolen Coins / Hack	hacker-bybit
+hacker	tron	hacker-bitget	Stolen Coins / Hack	hacker-bitget
+issuer-blocked-usdc	ethereum	banned-by-usdc	Illegal Service / Blocked by issuer	(unnamed)
+issuer-blocked-usdc	tron	banned-by-usdc	Illegal Service / Blocked by issuer	(unnamed)
+issuer-blocked-usdt	ethereum	banned-by-usdt	Illegal Service / Blocked by issuer	(unnamed)
+issuer-blocked-usdt	tron	banned-by-usdt	Illegal Service / Blocked by issuer	(unnamed)
+mixer	bitcoin	helix	Mixing Service	helix
+mixer	bitcoin	bitcoin-fog	Mixing Service	bitcoin-fog
+mixer	bitcoin	inputs-io	Mixing Service	inputs-io
+mixer	bitcoin	bitlaunder	Mixing Service	bitlaunder
+mixer	bitcoin	coinjoin	Mixing Service	coinjoin
+mixer	ethereum	tornado-cash	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-1-eth	Mixing Service	tornado-cash
+mixer	ethereum	railgun	Mixing Service	railgun
+mixer	ethereum	tornado-cash-0-1-eth	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-10-eth	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-router	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-100-eth	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-old-proxy	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-team-1-vesting	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-proxy	Mixing Service	tornado-cash
+mixer	ethereum	tornado-cash-1-000-usdt	Mixing Service	tornado-cash
+mixer	ethereum	railgun-relay	Mixing Service	railgun
+mixer-user	ethereum	mixer-user-tornado-recipient	attribute-only	mixer-user-tornado-recipient
+mixer-user	ethereum	mixer-user-tornado-depositor	attribute-only	mixer-user-tornado-depositor
+money-laundering	ethereum	money-laundering-lazarus-group	Illegal Service / Money laundering	lazarus-group
+money-laundering	ethereum	money-laundering	Illegal Service / Money laundering	(unnamed)
+money-laundering	ethereum	money-laundering-sim-hyon-sop	Illegal Service / Money laundering	sim-hyon-sop
+money-laundering	ethereum	money-laundering-binance	evidence-only	binance
+money-laundering	tron	huione-group-deposit	Illegal Service / Money laundering	huione-group
+money-laundering	tron	money-laundering-lazarus-group	Illegal Service / Money laundering	lazarus-group
+money-laundering	tron	money-laundering	Illegal Service / Money laundering	(unnamed)
+money-laundering	tron	dsj-exchange-deposit	Illegal Service / Money laundering	dsj-exchange
+money-laundering	tron	money-laundering-huione-group	Illegal Service / Money laundering	huione-group
+money-laundering	tron	huione-group-hot	Illegal Service / Money laundering	huione-group
+money-laundering	tron	dsj-exchange-hot	Illegal Service / Money laundering	dsj-exchange
+money-laundering	tron	dsj-exchange	Illegal Service / Money laundering	dsj-exchange
+money-laundering	tron	money-laundering-dsj-exchange	Illegal Service / Money laundering	dsj-exchange
+money-laundering	tron	money-laundering-kraken	evidence-only	kraken
+no-kyc	ethereum	no-kyc	evidence-only	(unnamed)
+no-kyc	tron	fixedfloat	Exchange (licence unknown) / No-KYC swap	fixedfloat
+no-kyc	tron	changenow	Exchange (licence unknown) / No-KYC swap	changenow
+no-kyc	tron	crypto-bot	Exchange (licence unknown) / No-KYC swap	crypto-bot
+no-kyc	tron	changehero	Exchange (licence unknown) / No-KYC swap	changehero
+no-kyc	tron	no-kyc	evidence-only	(unnamed)
+no-kyc	tron	alfacash	Exchange (licence unknown) / No-KYC swap	alfacash
+otc-desk	bitcoin	renrenbit	Exchange (licence unknown) / OTC desk	renrenbit
+otc-desk	tron	binance	Exchange (licence unknown) / OTC desk	binance
+phishing	bitcoin	phishing-unspecified	Scam / Phishing	(unnamed)
+phishing	ethereum	phishing-unspecified	Scam / Phishing	(unnamed)
+phishing	tron	phishing-binance	Scam / Phishing	phishing-binance
+phishing	tron	phishing-triple-a	Scam / Phishing	phishing-triple-a
+phishing	tron	phishing-btse	Scam / Phishing	phishing-btse
+phishing	tron	phishing-whale-io	Scam / Phishing	phishing-whale-io
+phishing	tron	phishing-bithumb	Scam / Phishing	phishing-bithumb
+privacy-protocol	bitcoin	bitmixer	Mixing Service	bitmixer
+privacy-protocol	bitcoin	bitcoin-fog	Mixing Service	bitcoin-fog
+privacy-protocol	bitcoin	helixmixer	Mixing Service	helixmixer
+privacy-protocol	bitcoin	tails-donation	Other	tails-donation
+privacy-protocol	bitcoin	bitlaundry	Mixing Service	bitlaundry
+privacy-protocol	ethereum	tornado-cash	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-0-1-eth	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-1-eth	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-10-eth	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-100-eth	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-team-1-vesting	Mixing Service	tornado-cash
+privacy-protocol	ethereum	railgun-relay	Mixing Service	railgun
+privacy-protocol	ethereum	tornado-cash-proxy	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-old-proxy	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-router	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-donate	Mixing Service	tornado-cash
+privacy-protocol	ethereum	tornado-cash-1-000-usdt	Mixing Service	tornado-cash
+ransomware	bitcoin	ransomware-unspecified	Ransom	(unnamed)
+ransomware	bitcoin	ransomware-locky	Ransom	locky
+ransomware	bitcoin	ransomware-cryptowall	Ransom	cryptowall
+ransomware	bitcoin	ransomware-cryptolocker	Ransom	cryptolocker
+ransomware	bitcoin	ransomware-cryptxxx	Ransom	cryptxxx
+ransomware	bitcoin	ransomware-cryptotorlocker2015	Ransom	cryptotorlocker2015
+ransomware	bitcoin	ransomware-dmalockerv3	Ransom	dmalockerv3
+ransomware	bitcoin	ransomware-globe	Ransom	globe
+ransomware	bitcoin	ransomware-samsam	Ransom	samsam
+ransomware	bitcoin	ransomware	Ransom	(unnamed)
+ransomware	bitcoin	ransomware-noobcrypt	Ransom	noobcrypt
+ransomware	bitcoin	ransomware-jigsaw	Ransom	jigsaw
+risk-flag	ethereum	suspicious	evidence-only	(unnamed)
+risk-flag	ethereum	risk-flag	evidence-only	(unnamed)
+risk-flag	ethereum	risk-flag-circle	evidence-only	circle
+risk-flag	ethereum	risk-flag-buda	evidence-only	buda
+risk-flag	ethereum	risk-flag-binance	evidence-only	binance
+risk-flag	ethereum	risk-flag-lazarus-group	evidence-only	lazarus-group
+risk-flag	ethereum	risk-flag-grinex	evidence-only	grinex
+risk-flag	ethereum	risk-flag-tornado-cash	evidence-only	tornado-cash
+risk-flag	ethereum	risk-flag-roman-semenov	evidence-only	roman-semenov
+risk-flag	ethereum	risk-flag-garantex	evidence-only	garantex
+risk-flag	ethereum	risk-flag-bzx-privkey-exploiter	evidence-only	bzx-privkey-exploiter
+risk-flag	ethereum	risk-flag-alex-adrianus-martinus-peijnenburg	evidence-only	alex-peijnenburg
+risk-flag	tron	risk-flag	evidence-only	(unnamed)
+risk-flag	tron	suspicious	evidence-only	(unnamed)
+risk-flag	tron	huione-group-deposit	evidence-only	huione-group
+risk-flag	tron	jp-ex-deposit	evidence-only	jp-ex
+risk-flag	tron	risk-flag-islamic-revolutionary-guard-corps	evidence-only	islamic-revolutionary-guard-corps
+risk-flag	tron	risk-flag-isis-k	evidence-only	isis-k
+risk-flag	tron	risk-flag-lazarus-group	evidence-only	lazarus-group
+risk-flag	tron	risk-flag-grinex	evidence-only	grinex
+risk-flag	tron	risk-flag-xinbi-guarantee	evidence-only	xinbi-guarantee
+risk-flag	tron	risk-flag-cheil-credit-bank	evidence-only	cheil-credit-bank
+risk-flag	tron	risk-flag-terrorist-seizure-aso-29-23	Terrorism Financing / Seizure order	aso-29-23
+risk-flag	tron	byex-deposit	evidence-only	byex
+sanctioned-entity	bitcoin	sanctioned-by-ofac-hydra-market	Sanctions	hydra-market
+sanctioned-entity	bitcoin	sanctioned-by-ofac-wang-yunhe	Sanctions	wang-yunhe
+sanctioned-entity	bitcoin	sanctioned-by-ofac-blender-io	Sanctions	blender-io
+sanctioned-entity	bitcoin	sanctioned-by-ofac-parsarad-behrouz	Sanctions	parsarad-behrouz
+sanctioned-entity	bitcoin	israeli-seizure-order-aso-ali-ismail-shafiq-abualkas	Terrorism Financing / Seizure order	aso-ali-ismail-shafiq-abualkas
+sanctioned-entity	bitcoin	sanctioned-by-ofac-grimm-matthew-simon	Sanctions	grimm-matthew-simon
+sanctioned-entity	bitcoin	sanctioned-by-ofac-chen-zhi	Sanctions	chen-zhi
+sanctioned-entity	bitcoin	sanctioned-by-ofac-chatex	Sanctions	chatex
+sanctioned-entity	bitcoin	sanctioned-entity-chatex	Sanctions	chatex
+sanctioned-entity	bitcoin	sanctioned-by-ofac-peijnenburg-alex-adrianus-martinus	Sanctions	alex-peijnenburg
+sanctioned-entity	bitcoin	sanctioned-by-japan-wu-huihui	Sanctions	wu-huihui
+sanctioned-entity	bitcoin	sanctioned-by-ofac-wu-huihui	Sanctions	wu-huihui
+sanctioned-entity	ethereum	sanctioned-entity	Sanctions	(unnamed)
+sanctioned-entity	ethereum	sanctioned-north-korea-lazarus-group	Sanctions	lazarus-group
+sanctioned-entity	ethereum	sanctioned-entity-binance	evidence-only	binance
+sanctioned-entity	ethereum	sanctioned-behzad-mesri	Sanctions	behzad-mesri
+sanctioned-entity	ethereum	sanctioned-by-ofac-mesri-behzad	Sanctions	behzad-mesri
+sanctioned-entity	ethereum	sanctioned-garantex	Sanctions	garantex
+sanctioned-entity	ethereum	israeli-seizure-order-aso-ali-ismail-shafiq-abualkas	Terrorism Financing / Seizure order	aso-ali-ismail-shafiq-abualkas
+sanctioned-entity	ethereum	sanctioned-by-japan-lazarus-group	Sanctions	lazarus-group
+sanctioned-entity	ethereum	sanctioned-by-ofac-semenov-roman	Sanctions	roman-semenov
+sanctioned-entity	ethereum	sanctioned-roman-semenov-tornado-cash	Sanctions	roman-semenov
+sanctioned-entity	ethereum	sanctioned-by-ofac-lazarus-group	Sanctions	lazarus-group
+sanctioned-entity	ethereum	sanctioned-entity-grinex	Sanctions	grinex
+sanctioned-entity	tron	sanctioned-htx	Sanctions	htx
+sanctioned-entity	tron	sanctioned-entity	Sanctions	(unnamed)
+sanctioned-entity	tron	sanctioned-rapira	Sanctions	rapira
+sanctioned-entity	tron	sanctioned-israel	Sanctions	(unnamed)
+sanctioned-entity	tron	sanctioned-entity-islamic-revolutionary-guard-corps	Sanctions	islamic-revolutionary-guard-corps
+sanctioned-entity	tron	israeli-seizure-order-aso-mohammad-kamal-abdulghafer-jbarah	Terrorism Financing / Seizure order	aso-mohammad-kamal-abdulghafer-jbarah
+sanctioned-entity	tron	sanctioned-by-ofac-isil-khorasan	Sanctions	isis-k
+sanctioned-entity	tron	sanctioned-entity-isis-k	Sanctions	isis-k
+sanctioned-entity	tron	sanctioned-ramzinex	Sanctions	ramzinex
+sanctioned-entity	tron	sanctioned-abantether	Sanctions	abantether
+sanctioned-entity	tron	israeli-seizure-order-aso-tawfiq-mohammad-tawfiq-bayari	Terrorism Financing / Seizure order	aso-tawfiq-mohammad-tawfiq-bayari
+sanctioned-entity	tron	sanctioned-isis-k	Sanctions	isis-k
+scam	bitcoin	scam-unspecified	Scam	(unnamed)
+scam	bitcoin	scam-sextortion	Scam	(unnamed)
+scam	bitcoin	scam-blackmail	Scam	(unnamed)
+scam	bitcoin	scam-fraud	Scam	(unnamed)
+scam	bitcoin	scam-fraud-tumbler	Scam	(unnamed)
+scam	bitcoin	scam-investment	Scam	(unnamed)
+scam	bitcoin	scam-pirateat40-btcst	Scam	pirateat40-btcst
+scam	bitcoin	scam-theft	Scam	(unnamed)
+scam	bitcoin	scam-extortion	Scam	(unnamed)
+scam	bitcoin	scam-ponzicoin	Scam	ponzicoin
+scam	bitcoin	scam-giveaway	Scam	(unnamed)
+scam	bitcoin	scam-spam	Scam	(unnamed)
+scam	ethereum	scam-unspecified	Scam	(unnamed)
+scam	ethereum	scam-trust-trading	Scam	trust-trading
+scam	ethereum	scam-theft	Scam	(unnamed)
+scam	ethereum	scam	Scam	(unnamed)
+scam	ethereum	scam-malware	Scam	(unnamed)
+scam	ethereum	scam-inferno-drainer	Scam	inferno-drainer
+scam	ethereum	scam-upbit-hacker-2025	Scam	upbit-hacker-2025
+scam	ethereum	scam-sim-hyon-sop-ofac-sanctioned	Scam	sim-hyon-sop
+scam	ethereum	scam-drift-protocol-exploiter	Scam	drift-protocol-exploiter
+scam	ethereum	scam-remitano-hacker	Scam	remitano-hacker
+scam	tron	whale-io-deposit	Scam	whale-io
+scam	tron	scam	Scam	(unnamed)
+scam	tron	scam-htx	evidence-only	htx
+scam	tron	scam-verilyhk	Scam	verilyhk
+scam	tron	scam-dsj-exchange	Scam	dsj-exchange
+scam	tron	scam-xinbi-guarantee	Scam	xinbi-guarantee
+scam	tron	scam-whale-io	Scam	whale-io
+scam	tron	scam-binance	evidence-only	binance
+scam	tron	scam-okx	evidence-only	okx
+scam	tron	whale-io-hot	Scam	whale-io
+scam	tron	scam-triple-a	Scam	triple-a
+tainted	bitcoin	tainted-stolen-funds	Stolen Coins / Tainted	(unnamed)
+tainted	bitcoin	tainted-ransomware	Ransom / Tainted	(unnamed)
+tainted	ethereum	tainted-stolen-funds	Stolen Coins / Tainted	(unnamed)
+tainted	ethereum	tainted-scam	Scam / Tainted	(unnamed)
+tainted	ethereum	tainted-aml-flag	evidence-only	(unnamed)
+tainted	tron	tainted-stolen-funds	Stolen Coins / Tainted	(unnamed)
+tainted	tron	tainted-scam	Scam / Tainted	(unnamed)
+terrorist	ethereum	terrorist-gaza-now	Terrorism Financing	gaza-now
+terrorist	tron	terrorist-islamic-revolutionary-guard-corps	Terrorism Financing	islamic-revolutionary-guard-corps
+terrorist	tron	terrorist-gaza-now	Terrorism Financing	gaza-now
+terrorist	tron	terrorist-hamas	Terrorism Financing	hamas
