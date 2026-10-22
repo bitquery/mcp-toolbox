@@ -29,6 +29,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/google/go-cmp/cmp"
 	"github.com/googleapis/mcp-toolbox/internal/auth/generic"
+	"github.com/googleapis/mcp-toolbox/internal/bitqueryresources"
 	"github.com/googleapis/mcp-toolbox/internal/server"
 )
 
@@ -39,6 +40,8 @@ type Config struct {
 	Tools           server.ToolConfigs           `yaml:"tools"`
 	Prompts         server.PromptConfigs         `yaml:"prompts"`
 	Groups          server.GroupConfigs          `yaml:"groups"`
+	// Bitquery: the built-in resources served (`kind: bitqueryResource`)
+	Resources server.ResourceConfigs `yaml:"bitqueryResources"`
 }
 
 type ConfigParser struct {
@@ -150,7 +153,7 @@ func (p *ConfigParser) ParseConfig(ctx context.Context, raw []byte) (Config, err
 	}
 
 	// Parse contents
-	config.Sources, config.AuthServices, config.EmbeddingModels, config.Tools, config.Prompts, config.Groups, err = server.UnmarshalPrimitiveConfig(ctx, raw)
+	config.Sources, config.AuthServices, config.EmbeddingModels, config.Tools, config.Prompts, config.Groups, config.Resources, err = server.UnmarshalConfigWithResources(ctx, raw)
 	if err != nil {
 		return config, err
 	}
@@ -180,7 +183,7 @@ func ConvertConfig(raw []byte) ([]byte, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw), yaml.UseOrderedMap())
 	encoder := yaml.NewEncoder(&buf, yaml.UseLiteralStyleIfMultiline(true))
 
-	nestedFormatKey := []string{"sources", "authServices", "embeddingModels", "tools", "toolsets", "prompts", "groups"}
+	nestedFormatKey := []string{"sources", "authServices", "embeddingModels", "tools", "toolsets", "prompts", "groups", "bitqueryResources"}
 	docIndex := 0
 	for {
 		if err := decoder.Decode(&input); err != nil {
@@ -219,6 +222,8 @@ func ConvertConfig(raw []byte) ([]byte, error) {
 					key = "prompt"
 				case "groups":
 					key = "group"
+				case "bitqueryResources":
+					key = bitqueryresources.Kind
 				}
 				transformed, err := transformDocs(key, slice)
 				if err != nil {
@@ -376,6 +381,19 @@ func mergeConfigs(files ...Config) (Config, error) {
 				conflicts = append(conflicts, fmt.Sprintf("group '%s' (file #%d)", name, fileIndex+1))
 			} else {
 				merged.Groups[name] = grp
+			}
+		}
+
+		// Bitquery: check for conflicts and merge the enabled built-in resources;
+		// the map stays nil while no file enables one
+		for name, res := range file.Resources {
+			if _, exists := merged.Resources[name]; exists {
+				conflicts = append(conflicts, fmt.Sprintf("%s '%s' (file #%d)", bitqueryresources.Kind, name, fileIndex+1))
+			} else {
+				if merged.Resources == nil {
+					merged.Resources = make(server.ResourceConfigs)
+				}
+				merged.Resources[name] = res
 			}
 		}
 	}

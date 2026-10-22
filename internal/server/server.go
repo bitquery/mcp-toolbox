@@ -189,6 +189,10 @@ func InitializeConfigs(ctx context.Context, cfg ServerConfig) (
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
+	// Bitquery: a tool's bitqueryUI must name a resource the cfg enables
+	if err := validateBitqueryUI(cfg); err != nil {
+		return nil, nil, nil, nil, nil, nil, err
+	}
 
 	// initialize and validate the prompts from configs
 	promptsMap := make(map[string]prompts.Prompt)
@@ -476,6 +480,13 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	sseManager := newSseManager(ctx)
 
 	primitiveManager := primitives.NewPrimitiveManager(sourcesMap, authServicesMap, embeddingModelsMap, toolsMap, promptsMap, groupsMap)
+	// Bitquery: the built-in resources the cfg enables (bitquery_resources.go)
+	resourcesMap, err := InitializeResources(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize configs: %w", err)
+	}
+	logResources(ctx, resourcesMap)
+	primitiveManager.SetResources(resourcesMap)
 
 	limit := cfg.HttpMaxRequestBytes
 	if limit <= 0 {

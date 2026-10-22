@@ -54,6 +54,10 @@ func ProcessMethod(ctx context.Context, id jsonrpc.RequestId, method string, g g
 	case PROMPTS_GET:
 		return promptsGetHandler(ctx, id, g, primitiveMgr, body)
 	default:
+		// Bitquery: the resources methods, while the server serves a resource
+		if res, ok, err := processResourcesMethod(ctx, id, method, primitiveMgr, body); ok {
+			return res, err
+		}
 		err := fmt.Errorf("invalid method %s", method)
 		return jsonrpc.NewError(id, jsonrpc.METHOD_NOT_FOUND, err.Error(), nil), err
 	}
@@ -94,6 +98,11 @@ func initializeHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (
 		},
 		// Bitquery: empty (not configured) is omitted from the JSON
 		Instructions: util.ServerInstructionsFromContext(ctx),
+	}
+	// Bitquery: a server that serves no resource does not advertise them
+	if util.ResourcesCapabilityFromContext(ctx) {
+		resourcesListChanged := false
+		result.Capabilities.Resources = &ListChanged{ListChanged: &resourcesListChanged}
 	}
 	res := jsonrpc.JSONRPCResponse{
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
@@ -410,10 +419,8 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 
 	content := make([]TextContent, 0)
 
-	sliceRes, ok := results.([]any)
-	if !ok {
-		sliceRes = []any{results}
-	}
+	// Bitquery: a tools.StructuredResult also carries structuredContent
+	sliceRes, structured := tools.SplitResult(results)
 
 	for _, d := range sliceRes {
 		text := TextContent{Type: "text"}
@@ -429,7 +436,7 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 	return jsonrpc.JSONRPCResponse{
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
 		Id:      id,
-		Result:  CallToolResult{Content: content},
+		Result:  CallToolResult{Content: content, StructuredContent: structured},
 	}, nil
 }
 

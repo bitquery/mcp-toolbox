@@ -223,6 +223,8 @@ type ConfigBase struct {
 	Description    string   `yaml:"description"`
 	AuthRequired   []string `yaml:"authRequired"`
 	ScopesRequired []string `yaml:"scopesRequired"`
+	// Bitquery: the tool's MCP Apps `_meta.ui` (bitquery_ui.go).
+	BitqueryUI *ToolUI `yaml:"bitqueryUI,omitempty"`
 }
 
 func (c ConfigBase) GetName() string             { return c.Name }

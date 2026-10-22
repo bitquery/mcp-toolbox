@@ -33,6 +33,9 @@ const (
 	HEADER_MISMATCH                    = -32020
 	MISSING_REQUIRED_CLIENT_CAPABILITY = -32021
 	UNSUPPORTED_PROTOCOL_VERSION       = -32022
+	// Bitquery: resources/read of an unknown URI, up to protocol 2025-11-25
+	// (the draft 2026-07-28 answers it with INVALID_PARAMS).
+	RESOURCE_NOT_FOUND = -32002
 
 	// Custom auth error codes
 	UNAUTHORIZED = -401
@@ -126,6 +129,8 @@ func (e Error) String() string {
 		return "unauthorized"
 	case FORBIDDEN:
 		return "forbidden"
+	case RESOURCE_NOT_FOUND:
+		return "resource_not_found"
 	default:
 		return "jsonrpc_error"
 	}

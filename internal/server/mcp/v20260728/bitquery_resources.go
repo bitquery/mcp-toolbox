@@ -1,0 +1,287 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package v20260728
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/googleapis/mcp-toolbox/internal/server/mcp/jsonrpc"
+	mcputil "github.com/googleapis/mcp-toolbox/internal/server/mcp/util"
+	"github.com/googleapis/mcp-toolbox/internal/server/primitives"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// Bitquery: the resources methods. They serve the built-in resources the cfg
+// enables (internal/bitqueryresources), the same on every endpoint; a server
+// that serves none answers them as unknown methods.
+
+/* Resources */
+
+// Sent from the client to request a list of resources the server has.
+type ListResourcesRequest struct {
+	PaginatedRequest
+}
+
+// The server's response to a resources/list request from the client.
+type ListResourcesResult struct {
+	Result
+	PaginatedResult
+	CacheableResult
+	Resources []Resource `json:"resources"`
+}
+
+// A known resource that the server is capable of reading.
+type Resource struct {
+	// The URI of this resource.
+	URI string `json:"uri"`
+	BaseMetadata
+	// A description of what this resource represents.
+	Description string `json:"description,omitempty"`
+	// The MIME type of this resource, if known.
+	MimeType string `json:"mimeType,omitempty"`
+	// See [General fields: `_meta`](/specification/2025-11-25/basic/index#_meta) for notes on `_meta` usage.
+	Metadata map[string]any `json:"_meta,omitempty"`
+}
+
+// Sent from the client to request a list of resource templates the server has.
+type ListResourceTemplatesRequest struct {
+	PaginatedRequest
+}
+
+// The server's response to a resources/templates/list request from the client.
+type ListResourceTemplatesResult struct {
+	Result
+	PaginatedResult
+	CacheableResult
+	ResourceTemplates []ResourceTemplate `json:"resourceTemplates"`
+}
+
+// A template description for resources available on the server.
+type ResourceTemplate struct {
+	// A URI template (according to RFC 6570) that can be used to construct resource URIs.
+	URITemplate string `json:"uriTemplate"`
+	BaseMetadata
+	// A description of what this template is for.
+	Description string `json:"description,omitempty"`
+	// The MIME type for all resources that match this template.
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// Sent from the client to the server, to read a specific resource URI.
+type ReadResourceRequest struct {
+	jsonrpc.Request
+	Params ReadResourceRequestParams `json:"params"`
+}
+
+// Parameters for a `resources/read` request.
+type ReadResourceRequestParams struct {
+	RequestParams
+	/**
+	 * The URI of the resource to read.
+	 */
+	URI string `json:"uri"`
+}
+
+// The server's response to a resources/read request from the client.
+type ReadResourceResult struct {
+	Result
+	CacheableResult
+	Contents []TextResourceContents `json:"contents"`
+}
+
+// The contents of a text resource.
+type TextResourceContents struct {
+	// The URI of this resource.
+	URI string `json:"uri"`
+	// The MIME type of this resource, if known.
+	MimeType string `json:"mimeType,omitempty"`
+	// The text of the item.
+	Text string `json:"text"`
+	// See [General fields: `_meta`](/specification/2025-11-25/basic/index#_meta) for notes on `_meta` usage.
+	Metadata map[string]any `json:"_meta,omitempty"`
+}
+
+// processResourcesMethod answers a resources method. It reports false for any
+// other method, and for every method while the server serves no resource.
+func processResourcesMethod(ctx context.Context, id jsonrpc.RequestId, method string, primitiveMgr *primitives.PrimitiveManager, body []byte, header http.Header) (any, bool, error) {
+	if primitiveMgr == nil || !primitiveMgr.HasResources() {
+		return nil, false, nil
+	}
+	var res any
+	var err error
+	switch method {
+	case mcputil.RESOURCES_LIST:
+		res, err = resourcesListHandler(ctx, id, primitiveMgr, body, header)
+	case mcputil.RESOURCES_READ:
+		res, err = resourcesReadHandler(ctx, id, primitiveMgr, body, header)
+	case mcputil.RESOURCES_TEMPLATES_LIST:
+		res, err = resourcesTemplatesListHandler(ctx, id, body, header)
+	default:
+		return nil, false, nil
+	}
+	return res, true, err
+}
+
+// GenerateListResourcesResult generates the resources/list result.
+func GenerateListResourcesResult(pMgr *primitives.PrimitiveManager) ListResourcesResult {
+	list := pMgr.ListResources()
+	resources := make([]Resource, 0, len(list))
+	for _, r := range list {
+		resources = append(resources, Resource{
+			URI:          r.URI,
+			BaseMetadata: BaseMetadata{Name: r.Name, Title: r.Title},
+			Description:  r.Description,
+			MimeType:     r.MimeType,
+			Metadata:     r.Meta(),
+		})
+	}
+	return ListResourcesResult{
+		Resources: resources,
+		Result: Result{
+			ResultType: resultTypeComplete,
+		},
+		CacheableResult: CacheableResult{
+			TtlMs:      300000, // 5 minutes
+			CacheScope: cacheScopePublic,
+		},
+	}
+}
+
+// resourcesListHandler handles the "resources/list" method. Every resource
+// fits in one page, so a cursor is ignored and none is returned.
+func resourcesListHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, body []byte, header http.Header) (any, error) {
+	var req ListResourcesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources list request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+	validateHeaderErr, err := validateHeader(id, header, mcputil.RESOURCES_LIST, "")
+	if err != nil {
+		return validateHeaderErr, err
+	}
+	validateErr, err := validateMetadata(id, req.Params.RequestParams, header == nil)
+	if err != nil {
+		return validateErr, err
+	}
+
+	result := GenerateListResourcesResult(primitiveMgr)
+	meta, err := getResultMetadata(ctx, result.Meta)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	result.Meta = meta
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result:  result,
+	}, nil
+}
+
+// resourcesTemplatesListHandler handles the "resources/templates/list"
+// method. The server has no resource template.
+func resourcesTemplatesListHandler(ctx context.Context, id jsonrpc.RequestId, body []byte, header http.Header) (any, error) {
+	var req ListResourceTemplatesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources templates list request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+	validateHeaderErr, err := validateHeader(id, header, mcputil.RESOURCES_TEMPLATES_LIST, "")
+	if err != nil {
+		return validateHeaderErr, err
+	}
+	validateErr, err := validateMetadata(id, req.Params.RequestParams, header == nil)
+	if err != nil {
+		return validateErr, err
+	}
+
+	meta, err := getResultMetadata(ctx, nil)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result: ListResourceTemplatesResult{
+			Result: Result{
+				ResultType: resultTypeComplete,
+				Result: jsonrpc.Result{
+					Meta: meta,
+				},
+			},
+			CacheableResult: CacheableResult{
+				TtlMs:      300000, // 5 minutes
+				CacheScope: cacheScopePublic,
+			},
+			ResourceTemplates: []ResourceTemplate{},
+		},
+	}, nil
+}
+
+// resourcesReadHandler handles the "resources/read" method. This protocol
+// version answers an unknown URI with invalid params; the earlier ones had a
+// code of their own for it.
+func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, body []byte, header http.Header) (any, error) {
+	var req ReadResourceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources/read request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+	validateHeaderErr, err := validateHeader(id, header, mcputil.RESOURCES_READ, req.Params.URI)
+	if err != nil {
+		return validateHeaderErr, err
+	}
+	validateErr, err := validateMetadata(id, req.Params.RequestParams, header == nil)
+	if err != nil {
+		return validateErr, err
+	}
+	uri := req.Params.URI
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("mcp.resource.uri", uri))
+
+	r, ok := primitiveMgr.GetResource(uri)
+	if !ok {
+		err := fmt.Errorf("resource not found: %q", uri)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, "Resource not found", map[string]string{"uri": uri}), err
+	}
+	meta, err := getResultMetadata(ctx, nil)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result: ReadResourceResult{
+			Result: Result{
+				ResultType: resultTypeComplete,
+				Result: jsonrpc.Result{
+					Meta: meta,
+				},
+			},
+			CacheableResult: CacheableResult{
+				TtlMs:      300000, // 5 minutes
+				CacheScope: cacheScopePublic,
+			},
+			Contents: []TextResourceContents{{
+				URI:      r.URI,
+				MimeType: r.MimeType,
+				Text:     r.Text,
+				Metadata: r.Meta(),
+			}},
+		},
+	}, nil
+}
