@@ -14,9 +14,11 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,6 +84,12 @@ type Config struct {
 	// rand:rand:client:user:payer:plan:server. Set on sources pointing at the legacy
 	// *.api-cluster.local ClickHouse (btc/solana).
 	LegacyBillingPaths string `yaml:"bitqueryLegacyBillingPaths"`
+	// Bitquery: when true, the request body (and a `query` URL parameter) is
+	// treated as ClickHouse SQL and refused when it calls a table function that
+	// reaches outside the server — url(), remote(), redis(), s3(), file(), ...
+	// (see util.BitqueryForbiddenTableFunction). Set on every source that fronts
+	// a ClickHouse HTTP endpoint and carries a raw-SQL tool.
+	ForbidTableFunctions bool `yaml:"bitqueryForbidTableFunctions"`
 }
 
 func (r Config) SourceConfigType() string {
@@ -208,6 +216,13 @@ func (s *Source) Client() *http.Client {
 }
 
 func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error) {
+	// Bitquery: refuse a forbidden table function before anything is sent.
+	if s.ForbidTableFunctions {
+		if err := s.bitqueryRefuseTableFunctions(req); err != nil {
+			return nil, err
+		}
+	}
+
 	// Make request and fetch response. Bitquery: the whole body is read (and the
 	// response closed) by bitqueryRoundTrip, which also sends the request again
 	// after a short pause while ClickHouse refuses it for too many simultaneous
@@ -258,6 +273,33 @@ func (s *Source) RunRequest(ctx context.Context, req *http.Request) (any, error)
 		}
 	}
 	return result, nil
+}
+
+// bitqueryRefuseTableFunctions checks the SQL a request carries — its body
+// (ClickHouse reads the statement from a POST body) and its `query` URL
+// parameter (the GET form) — against util.BitqueryForbiddenTableFunction. The
+// body is read once and put back so the request can still be sent.
+func (s *Source) bitqueryRefuseTableFunctions(req *http.Request) error {
+	if q := req.URL.Query().Get("query"); q != "" {
+		if fn, ok := util.BitqueryForbiddenTableFunction(q); ok {
+			return util.BitqueryTableFunctionRefused(fn)
+		}
+	}
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return fmt.Errorf("unable to read request body: %w", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	req.ContentLength = int64(len(body))
+	if fn, ok := util.BitqueryForbiddenTableFunction(string(body)); ok {
+		return util.BitqueryTableFunctionRefused(fn)
+	}
+	return nil
 }
 
 // bitqueryTimeout is the limit a failed request is reported against: the

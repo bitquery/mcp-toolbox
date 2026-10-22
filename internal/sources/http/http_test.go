@@ -86,6 +86,27 @@ func TestParseFromYamlHttp(t *testing.T) {
 				},
 			},
 		},
+		{
+			desc: "bitquery table-function guard",
+			in: `
+			kind: source
+			name: clickhouse-eth-http
+			type: http
+			baseUrl: http://test_server/
+			allowPrivateNetworks: true
+			bitqueryForbidTableFunctions: true
+			`,
+			want: map[string]sources.SourceConfig{
+				"clickhouse-eth-http": Config{
+					Name:                 "clickhouse-eth-http",
+					Type:                 SourceType,
+					BaseURL:              "http://test_server/",
+					Timeout:              "30s",
+					AllowPrivateNetworks: true,
+					ForbidTableFunctions: true,
+				},
+			},
+		},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.desc, func(t *testing.T) {
