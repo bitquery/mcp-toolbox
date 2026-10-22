@@ -19,7 +19,6 @@ package riskreport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
@@ -28,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/googleapis/mcp-toolbox/internal/tools"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
 
@@ -38,7 +36,14 @@ const maxHopsCap = 6
 
 // noExposure is the answer when no counterparty carries an entity label. It
 // never says the address is clean: only that our labels found nothing.
-const noExposure = "no exposure found in our labels"
+// noExposureFlagged replaces it when the report still raised risk flags (dust
+// from a labelled high-risk address, poisoning, an other-asset contact, a
+// sanctions hit): "no exposure" alone read as "nothing found" while the flags
+// said otherwise, so the text points at them.
+const (
+	noExposure        = "no exposure found in our labels"
+	noExposureFlagged = "no labelled exposure in the scored flow — see flags"
+)
 
 type assetOut struct {
 	Asset    string `json:"asset"`
@@ -469,22 +474,17 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	}
 	rep.Cost = ex.cost
 	rep.TimingMS = time.Since(start).Milliseconds()
-	// format json returns the report as the single JSON document, exactly as
-	// before. format markdown (the default) returns a concise human report as the
-	// text content — small enough for a client's response cap — with the whole
-	// report alongside it as structured content for a UI to render.
+	// format json returns the report as the single JSON document. format markdown
+	// (the default) returns ONLY the concise human report as text — small enough
+	// for a client's response cap. It does not also carry the report object as
+	// structured content: a host that reads structuredContent shows the model
+	// that object and drops the text, so the model would never see the document
+	// (measured on the Claude connector, 2026-10-22). An app that wants the object
+	// asks format=json. The markdown becomes one text content item.
 	if req.format == "json" {
 		return rep, nil
 	}
-	b, err := json.Marshal(rep)
-	if err != nil {
-		return nil, util.ProcessGeneralError(err)
-	}
-	var structured map[string]any
-	if err := json.Unmarshal(b, &structured); err != nil {
-		return nil, util.ProcessGeneralError(err)
-	}
-	return tools.StructuredResult{Content: []any{markdownReport(rep)}, Structured: structured}, nil
+	return markdownReport(rep), nil
 }
 
 // direct builds the direct view of one Tron address.
@@ -1026,6 +1026,14 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		rep.Params.UnmappedTypes = append(rep.Params.UnmappedTypes, u)
 	}
 	sort.Strings(rep.Params.UnmappedTypes)
+
+	// No labelled exposure, but risk flags were raised (dust from a high-risk
+	// address, poisoning, an other-asset contact, a sanctions hit): point the
+	// exposure line at the flags instead of reading as "nothing found". Set here,
+	// after every flag has been appended.
+	if rep.Exposure == noExposure && len(rep.Flags) > 0 {
+		rep.Exposure = noExposureFlagged
+	}
 
 	// The leading summary, from the finished report.
 	rep.AtAGlance = reportHead{

@@ -482,6 +482,41 @@ func TestNoLabelReport(t *testing.T) {
 	}
 }
 
+// P2-2: no labelled connection in the report asset (so "no exposure") but a
+// risk flag was raised (here an other-asset contact labelled high-risk) — the
+// exposure line must point at the flags, not read as "nothing found".
+func TestNoExposureStillPointsAtFlags(t *testing.T) {
+	const illegal = "TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB"
+	chain := &fakeChain{
+		assets: []map[string]any{usdtAssetRow("1000000000", "0", 1, 0)},
+		// report-asset flow: one receipt from an UNLABELLED sender → no connection.
+		edges: []map[string]any{edgeRow("in", plainSender, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "aa")},
+		// another asset: a labelled high-risk contact → an other_asset_direct_risk flag.
+		other: []map[string]any{edgeRow("out", illegal, "500", "500", "500", 9, [4]string{"1", "9", "500", "500"}, "ff")},
+	}
+	labels := &fakeLabels{rows: map[string][]map[string]any{
+		illegal: {{"label_type": "money-laundering", "label_value": "ml-entity", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+	}}
+	tool := newTestTool(t, chain, labels)
+	res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := decode(t, res)
+	if out["exposure"] != noExposureFlagged {
+		t.Errorf("exposure = %v, want %q (no labelled connection but a risk flag)", out["exposure"], noExposureFlagged)
+	}
+	found := false
+	for _, f := range out["flags"].([]any) {
+		if f.(map[string]any)["type"] == "other_asset_direct_risk" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an other_asset_direct_risk flag: %v", out["flags"])
+	}
+}
+
 // P1-1: format json returns the report object unchanged (no structured
 // envelope); the default (markdown) returns a concise text document plus the
 // whole report as structured content; an unknown format is refused.
@@ -515,22 +550,27 @@ func TestFormatJSONAndMarkdown(t *testing.T) {
 		t.Errorf("at_a_glance.data_as_of %v != params.data_as_of %v", ag["data_as_of"], j["params"].(map[string]any)["data_as_of"])
 	}
 
-	// markdown (the default): a text document and the whole report structured.
-	res, err = tool.Invoke(context.Background(), newChain(), mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+	// markdown (the default): ONE text document, and NO structured envelope — a
+	// host that reads structuredContent would show the model that and drop the
+	// text, so the document must be the text and the only thing returned.
+	res, err = tool.Invoke(context.Background(), newChain(), mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target, "format": "markdown"}), "")
 	if err != nil {
 		t.Fatalf("markdown Invoke: %v", err)
 	}
 	items, structured := tools.SplitResult(res)
-	if structured == nil || structured["score"] == nil {
-		t.Errorf("markdown lacked the structured report: %v", structured)
+	if structured != nil {
+		t.Errorf("format markdown carried a structured envelope: %v", structured)
+	}
+	if len(items) != 1 {
+		t.Fatalf("markdown returned %d content items, want 1", len(items))
 	}
 	md, _ := items[0].(string)
 	if !strings.Contains(md, "# Address risk report") {
 		t.Errorf("markdown content is not the document:\n%s", md)
 	}
-	asOf, _ := structured["params"].(map[string]any)["data_as_of"].(string)
-	if asOf == "" || !strings.Contains(md, asOf) {
-		t.Errorf("markdown does not carry data_as_of %q", asOf)
+	// data_as_of must lead the document (a truncating client still sees it).
+	if i := strings.Index(md, "Data as of: "); i < 0 || i > 500 {
+		t.Errorf("data_as_of not near the top of the markdown (index %d)", i)
 	}
 
 	// An unknown format is refused before any statement runs.
@@ -828,6 +868,14 @@ func TestParseTimeReadsEverySpellingThePatternAdmits(t *testing.T) {
 
 func mustParams(t *testing.T, tool Tool, p map[string]any) parameters.ParamValues {
 	t.Helper()
+	// The structural tests read the report as JSON; the default output is now the
+	// markdown document (one text item, no structured envelope), so they ask for
+	// json unless a test sets format itself. The markdown default is exercised by
+	// TestFormatJSONAndMarkdown, which passes format explicitly.
+	if _, ok := p["format"]; !ok {
+		p = maps.Clone(p)
+		p["format"] = "json"
+	}
 	pv, err := parameters.ParseParams(tool.StaticParameters, p, nil)
 	if err != nil {
 		t.Fatalf("ParseParams(%v): %v", p, err)
