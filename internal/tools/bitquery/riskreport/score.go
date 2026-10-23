@@ -46,7 +46,7 @@ func (d direction) String() string {
 const formulaText = "level factor d: High 1.0, Medium 0.6, Low 0.3, None 0 (as in weights_used.levels). " +
 	"Per direction: dir_score = sum over entity types c of share_c * weight_c * d_c + share_unattributed * weight_unattributed, " +
 	"where share = amount / that direction's connection total (transfers above min_amount_usd). " +
-	"direct_floor = the highest weight_c * d_c of a 1-hop counterparty with an entity label, in the report asset, above the dust threshold. " +
+	"direct_floor = the highest weight_c * d_c of a 1-hop counterparty with an entity label that is listed as a connection (its transfers total above min_amount_usd), in the report asset. " +
 	"score = max(received_score, sent_score, direct_floor). " +
 	"Connections marked same_entity are removed from the direction's total before shares are taken, so the score is that of the flow that reached other entities; they stay in the breakdown and connections. " +
 	"Hops: 1 = a direct counterparty of the address."

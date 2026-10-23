@@ -926,7 +926,11 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			// row never sets the floor either, on any address — the floor must come
 			// from a higher-trust identity (invariant, never conditional).
 			sameEnt := sameEntity(at, c.Address)
-			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && !sameEnt && !m.attributionIsCommunity(at) {
+			// Only a counterparty that is itself a connection — a transfer above
+			// min_amount_usd (the same bar line ~954 uses) — sets the floor. Sub-min
+			// dust must not pin the score to a high-risk type it only brushed
+			// against (poisoning-shaped): it stays below the connection threshold.
+			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && c.RawAboveMin.Sign() > 0 && !sameEnt && !m.attributionIsCommunity(at) {
 				directFloor = f
 				floorFrom = map[string]any{"counterparty": c.Address, "direction": c.Dir.String(), "entity": displayEntity(at, c.Address),
 					"entity_type": at.Label.Type, "amount": formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers, "evidence_txs": c.TxAboveDust}

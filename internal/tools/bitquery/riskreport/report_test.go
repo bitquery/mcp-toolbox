@@ -666,6 +666,62 @@ func TestNativePriceEnablesDirectFloor(t *testing.T) {
 	}
 }
 
+// A 1-hop counterparty with a weight-100 label whose transfers are all at or
+// below min_amount_usd is not a connection, and does not set the direct floor
+// either: sub-min dust must not pin the score to a high-risk type it only
+// brushed against (poisoning-shaped). The same counterparty above
+// min_amount_usd is a connection and does floor, so the connection threshold is
+// the only thing deciding it. Price 0.33 USD/TRX: 60.5 TRX ~= $20 (above the
+// $5 dust bar, below the $100 min), 1000 TRX ~= $330 (above min).
+func TestSubMinContactDoesNotFloor(t *testing.T) {
+	const illegal = "TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB"
+	run := func(raw, rawMin string) map[string]any {
+		chain := &fakeChain{
+			price:  "0.33075464",
+			assets: []map[string]any{trxAssetRow("0", raw, 0, 1)},
+			edges: []map[string]any{
+				edgeRow("out", illegal, raw, rawMin, raw, 1, [4]string{"1", "1", raw, rawMin}, "ff"),
+			},
+		}
+		labels := &fakeLabels{rows: map[string][]map[string]any{
+			illegal: {{"label_type": "money-laundering", "label_value": "ml-entity", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}},
+		}}
+		tool := newTestTool(t, chain, labels)
+		res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		return decode(t, res)
+	}
+
+	// Sub-min ($20): the contact is above the dust bar, so it would have floored
+	// under the old rule, but it is not a connection — no floor, no floor_from.
+	out := run("60500000", "0")
+	score := out["score"].(map[string]any)
+	if score["direct_floor"].(float64) != 0 {
+		t.Errorf("sub-min direct_floor = %v, want 0", score["direct_floor"])
+	}
+	if score["direct_floor_from"] != nil {
+		t.Errorf("sub-min direct_floor_from = %v, want nil", score["direct_floor_from"])
+	}
+	if conns, _ := out["connections"].([]any); len(conns) != 0 {
+		t.Errorf("sub-min connections = %d, want 0 (below min_amount_usd)", len(conns))
+	}
+	if score["value"].(float64) != 0 {
+		t.Errorf("sub-min score value = %v, want 0", score["value"])
+	}
+
+	// The same counterparty above min ($330): a connection, and it floors to 100.
+	out = run("1000000000", "1000000000")
+	score = out["score"].(map[string]any)
+	if score["direct_floor"].(float64) != 100 {
+		t.Errorf("above-min direct_floor = %v, want 100 (Illegal Service weight 100)", score["direct_floor"])
+	}
+	if ff, _ := score["direct_floor_from"].(map[string]any); ff == nil || ff["counterparty"] != illegal {
+		t.Errorf("above-min direct_floor_from = %v, want the illegal counterparty", score["direct_floor_from"])
+	}
+}
+
 // P3-4: a transfer to the target's own entity is marked same_entity, left out
 // of the score, and kept in the output and breakdown. The same-entity leg here
 // is on the sent side under a type with sending level None, so the score (set
