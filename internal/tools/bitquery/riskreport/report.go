@@ -56,6 +56,12 @@ type assetOut struct {
 	Sent     string `json:"sent"`
 	Transfer int64  `json:"transfers"`
 	TxCount  int64  `json:"tx_count"`
+	// TransfersCapped is set when transfers/tx_count are the capped
+	// per-transaction list size, not the true counts (a whole-history Bitcoin
+	// report reads at most a fixed number of transactions per side), so a reader
+	// does not take the capped number for a real count. The exact lifetime
+	// received, sent and balance are still reported.
+	TransfersCapped bool `json:"transfers_capped,omitempty"`
 }
 
 type ownLabels struct {
@@ -103,14 +109,19 @@ type connectionOut struct {
 	// SameEntity is set when this connection names the target's own entity
 	// (its entity equals summary.labels.owner): a self-transfer. It is kept in
 	// the output and the breakdown for transparency but left out of the score.
-	SameEntity       bool     `json:"same_entity,omitempty"`
-	Subtype          string   `json:"subtype,omitempty"`
-	Licence          string   `json:"licence,omitempty"`
-	Received         string   `json:"received"`
-	ReceivedHops     *int     `json:"received_shortest_hops"`
-	Sent             string   `json:"sent"`
-	SentHops         *int     `json:"sent_shortest_hops"`
-	OtherTypes       []string `json:"other_types,omitempty"`
+	SameEntity   bool     `json:"same_entity,omitempty"`
+	Subtype      string   `json:"subtype,omitempty"`
+	Licence      string   `json:"licence,omitempty"`
+	Received     string   `json:"received"`
+	ReceivedHops *int     `json:"received_shortest_hops"`
+	Sent         string   `json:"sent"`
+	SentHops     *int     `json:"sent_shortest_hops"`
+	OtherTypes   []string `json:"other_types,omitempty"`
+	// TypeConflict is set when this connection also carries community-class
+	// labels whose risk type disagrees with the scored one; CommunityTypes lists
+	// those types. The community labels are kept for transparency but never score.
+	TypeConflict     bool     `json:"type_conflict,omitempty"`
+	CommunityTypes   []string `json:"community_types,omitempty"`
 	LabelValue       string   `json:"label_value"`
 	LabelSource      string   `json:"label_source"`
 	LabelSourceClass string   `json:"label_source_class"`
@@ -646,8 +657,31 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		if tot := edges.total[d]; tot.counterparties > int64(countDir(edges.rows, d)) {
 			// View all lists every cut, with its amount, after the search.
 			if req.view != "all" {
-				rep.Params.Cuts = append(rep.Params.Cuts, cutOut{Reason: "counterparty_limit", Direction: d.String(), Counterparts: tot.counterparties - int64(countDir(edges.rows, d)),
-					Note: "the smallest counterparties were not looked up; their amounts are counted as unattributed"})
+				cut := cutOut{Reason: "counterparty_limit", Direction: d.String(), Counterparts: tot.counterparties - int64(countDir(edges.rows, d)),
+					Note: "the smallest counterparties were not looked up; their amounts are counted as unattributed"}
+				// Bitcoin reports only the direct view, so its cut amount is set here
+				// (the Tron cuts get theirs from the view-all reconciliation): the
+				// above-min total less what the listed counterparties carry, the same
+				// arithmetic reconcile uses. Tron's direct-view cut is left without an
+				// amount, unchanged.
+				if req.chain == "bitcoin" {
+					listedAbove := new(big.Int)
+					for _, c := range edges.rows {
+						if c.Dir == d && c.RawAboveMin != nil {
+							listedAbove.Add(listedAbove, c.RawAboveMin)
+						}
+					}
+					base := tot.rawAboveMin
+					if base == nil {
+						base = new(big.Int)
+					}
+					cutAmt := new(big.Int).Sub(base, listedAbove)
+					if cutAmt.Sign() < 0 {
+						cutAmt = new(big.Int)
+					}
+					cut.Amount = formatUnits(cutAmt, asset.Decimals)
+				}
+				rep.Params.Cuts = append(rep.Params.Cuts, cut)
 			}
 		}
 		if n := other.total[d]; n > int64(countContacts(other.rows, d)) {
@@ -715,6 +749,12 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 	for _, a := range assets.rows {
 		rep.Summary.Assets = append(rep.Summary.Assets, a.out())
+	}
+	// On a whole-history Bitcoin report the per-side transaction list is capped,
+	// so transfers/tx_count are that cap, not the true counts: flag it rather than
+	// let the capped number read as real. received, sent and balance stay exact.
+	if req.chain == "bitcoin" && (row.nIn >= btcExpandTxCap || row.nOut >= btcExpandTxCap) {
+		rep.Summary.Asset.TransfersCapped = true
 	}
 	own := classOf(req.address)
 	rep.Summary.Labels.Tags = []string{}
@@ -811,6 +851,14 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 				conn.OtherTypes = append(conn.OtherTypes, o)
 			}
 		}
+		for _, ct := range at.CommunityTypes {
+			if !slices.Contains(conn.CommunityTypes, ct) {
+				conn.CommunityTypes = append(conn.CommunityTypes, ct)
+			}
+		}
+		if at.TypeConflict {
+			conn.TypeConflict = true
+		}
 		if !slices.Contains(conn.Addresses, addr) {
 			conn.Addresses = append(conn.Addresses, addr)
 		}
@@ -874,9 +922,11 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		aboveDust := c.RawMax != nil && c.RawMax.Cmp(dustRaw) > 0
 		if aboveDust {
 			// A self-transfer (the counterparty names the target's own entity) does
-			// not set the floor, as it is left out of the score.
+			// not set the floor, as it is left out of the score. A community-class
+			// row never sets the floor either, on any address — the floor must come
+			// from a higher-trust identity (invariant, never conditional).
 			sameEnt := sameEntity(at, c.Address)
-			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && !sameEnt {
+			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && !sameEnt && !m.attributionIsCommunity(at) {
 				directFloor = f
 				floorFrom = map[string]any{"counterparty": c.Address, "direction": c.Dir.String(), "entity": displayEntity(at, c.Address),
 					"entity_type": at.Label.Type, "amount": formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers, "evidence_txs": c.TxAboveDust}
@@ -895,7 +945,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 					"amount":            formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers, "first": c.First, "last": c.Last,
 				}})
 			}
-		} else if maxWeight(cl, req.weights) >= 100 {
+		} else if m.maxWeight(cl, req.weights) >= 100 {
 			rep.Flags = append(rep.Flags, flagOut{Type: "risky_dust", EvidenceTxs: c.Tx, Detail: map[string]any{
 				"counterparty": c.Address, "direction": c.Dir.String(), "entity": displayEntity(at, c.Address), "entity_type": at.Label.Type,
 				"amount": formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers,
@@ -1080,7 +1130,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		}
 		if ex.btc != nil && ex.btc.degraded {
 			rep.Params.Complete = false
-			rep.Params.Notes = append(rep.Params.Notes, "this address is large: only its biggest transactions were analysed for counterparties and the rest are reported as a cut; the summary totals are its full lifetime totals")
+			rep.Params.Notes = append(rep.Params.Notes, "this address has many transactions; only the largest were analysed for counterparties, and the rest are reported as a cut; the summary totals are its full lifetime totals")
 		}
 	}
 
@@ -1198,9 +1248,16 @@ func (m *method) firstTypeIn(a addressLabels, types []string) (typedLabel, bool)
 	return typedLabel{}, false
 }
 
-func maxWeight(a addressLabels, w weights) float64 {
+// maxWeight is the largest profile weight among the address's entity types,
+// used to decide the dust flag. Community-class rows are left out: the dust flag
+// fires only on a non-community row, so a community label never makes a
+// higher-trust entity (an exchange with a community scam report) fire it.
+func (m *method) maxWeight(a addressLabels, w weights) float64 {
 	best := 0.0
 	for _, l := range a.Types {
+		if m.rowIsCommunity(l.Row.Source) {
+			continue
+		}
 		if tw, ok := w.types[l.Type]; ok && tw.Weight > best {
 			best = tw.Weight
 		}

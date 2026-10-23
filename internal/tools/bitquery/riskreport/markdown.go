@@ -105,6 +105,14 @@ func emptyFlowReason(rep *reportOut) string {
 	return "no counterparty flow in the report asset was scored"
 }
 
+// counterpartyWord is the count-aware noun for a number of counterparties.
+func counterpartyWord(n int64) string {
+	if n == 1 {
+		return "counterparty"
+	}
+	return "counterparties"
+}
+
 // sentence capitalises the first letter (ASCII) and ends with a period.
 func sentence(s string) string {
 	if s == "" {
@@ -181,6 +189,16 @@ func markdownReport(rep *reportOut) string {
 			fmt.Fprintf(&b, "%s\n", u)
 		}
 	}
+	// A connection that is the target's own entity is excluded from the score;
+	// show how much it carried so the exclusion is not silent (bitcoin only for
+	// now, to keep the Tron report byte-identical).
+	if rep.Summary.Chain == "bitcoin" {
+		for _, c := range rep.Connections {
+			if c.SameEntity {
+				fmt.Fprintf(&b, "Excluded as same entity: %s received, %s sent.\n", c.Received, c.Sent)
+			}
+		}
+	}
 	b.WriteString("\n")
 
 	if len(rep.Connections) > 0 {
@@ -193,6 +211,9 @@ func markdownReport(rep *reportOut) string {
 			tag := ""
 			if c.SameEntity {
 				tag = " [same entity as target — not scored]"
+			}
+			if len(c.CommunityTypes) > 0 {
+				tag += fmt.Sprintf(" [community reports: %s — not scored]", strings.Join(c.CommunityTypes, ", "))
 			}
 			fmt.Fprintf(&b, "- %s (%s)%s: received %s%s, sent %s%s\n",
 				c.Entity, c.EntityType, tag, c.Received, hopsNote(c.ReceivedHops), c.Sent, hopsNote(c.SentHops))
@@ -221,9 +242,18 @@ func markdownReport(rep *reportOut) string {
 			if c.Direction != "" {
 				dir = " " + c.Direction
 			}
-			amt := c.Amount
-			if amt == "" {
-				amt = fmt.Sprintf("%d counterparties", c.Counterparts)
+			var amt string
+			if rep.Summary.Chain == "bitcoin" {
+				if nonZeroAmount(c.Amount) {
+					amt = fmt.Sprintf("%s %s", c.Amount, rep.Summary.Asset.Symbol)
+				} else {
+					amt = fmt.Sprintf("%d %s", c.Counterparts, counterpartyWord(c.Counterparts))
+				}
+			} else {
+				amt = c.Amount
+				if amt == "" {
+					amt = fmt.Sprintf("%d counterparties", c.Counterparts)
+				}
 			}
 			fmt.Fprintf(&b, "- %s%s: %s\n", c.Reason, dir, amt)
 		}

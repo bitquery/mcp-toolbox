@@ -112,16 +112,55 @@ type attribution struct {
 	// SourceClass, when set, is the row's label_source_class instead of the
 	// class labelSources gives its source (a mint has no label row).
 	SourceClass string
+	// CommunityTypes are the entity types of the address's community-class rows
+	// excluded from score-driving because a higher-class row is present. They are
+	// surfaced on the connection for transparency but never move the score.
+	CommunityTypes []string
+	// TypeConflict is set when an excluded community type is riskier (a higher
+	// weight) than the chosen type: the community labels disagree with the scored
+	// attribution.
+	TypeConflict bool
+}
+
+// eligibleTypes splits an address's typed rows into those eligible to drive the
+// score and the community-class rows excluded because the address carries a
+// higher-class typed row. Community is the lowest-trust class; when no
+// higher-class typed row is present every row stays eligible, so a community-only
+// address is still attributed (its community rows simply never set the floor).
+// Only typed rows count as "a higher-class row" — an attribute-only or
+// evidence-only row must not strip a community-only address of its connection.
+func (m *method) eligibleTypes(types []typedLabel) (eligible, excluded []typedLabel) {
+	communityRank := m.classRankOf(communityClass)
+	higher := false
+	for _, l := range types {
+		if m.classRankOf(m.sourceClass(l.Row.Source)) < communityRank {
+			higher = true
+			break
+		}
+	}
+	if !higher {
+		return slices.Clone(types), nil
+	}
+	for _, l := range types {
+		if m.sourceClass(l.Row.Source) == communityClass {
+			excluded = append(excluded, l)
+		} else {
+			eligible = append(eligible, l)
+		}
+	}
+	return eligible, excluded
 }
 
 // attribute picks the entity type of an address for one direction: the highest
 // weight x level, a tie going to the type listed first in the profile, and
-// within the type the row from the most specific source.
+// within the type the row from the most specific source. Community-class rows
+// are excluded from the choice when the address carries a higher-class row (the
+// excluded types are surfaced as CommunityTypes, never scored).
 func (m *method) attribute(a addressLabels, w weights, dir direction) (attribution, bool) {
 	if len(a.Types) == 0 {
 		return attribution{}, false
 	}
-	cands := slices.Clone(a.Types)
+	cands, excluded := m.eligibleTypes(a.Types)
 	sort.SliceStable(cands, func(i, j int) bool {
 		fi, fj := w.factor(cands[i].Type, dir), w.factor(cands[j].Type, dir)
 		if fi != fj {
@@ -138,6 +177,19 @@ func (m *method) attribute(a addressLabels, w weights, dir direction) (attributi
 	for _, c := range cands[1:] {
 		if c.Type != best.Type && !slices.Contains(out.OtherTypes, c.Type) {
 			out.OtherTypes = append(out.OtherTypes, c.Type)
+		}
+	}
+	// Excluded community rows are surfaced but never score. A community type that
+	// is riskier (a higher weight) than the chosen type is a conflict worth
+	// flagging; a community row of the chosen type itself is not listed.
+	bestWeight := w.types[best.Type].Weight
+	for _, c := range excluded {
+		if c.Type == best.Type || slices.Contains(out.CommunityTypes, c.Type) {
+			continue
+		}
+		out.CommunityTypes = append(out.CommunityTypes, c.Type)
+		if w.types[c.Type].Weight > bestWeight {
+			out.TypeConflict = true
 		}
 	}
 	return out, true

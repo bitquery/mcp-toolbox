@@ -159,10 +159,15 @@ type MethodConfig struct {
 	// SourcePreference orders sources within one class: when two rows of one
 	// entity type come from two lists, the row of the source listed first names
 	// the entity. A fixed order, so a list refresh never renames an entity.
-	SourcePreference []string                      `yaml:"sourcePreference"`
-	Thresholds       Thresholds                    `yaml:"thresholds"`
-	AssetUSD         map[string]map[string]float64 `yaml:"assetUsd"`
-	CoverageTier     map[string]string             `yaml:"coverageTier"`
+	SourcePreference []string `yaml:"sourcePreference"`
+	// ClassRank orders the label source classes by trust, highest first. A
+	// community-class row never sets the direct floor or fires the dust flag, and
+	// is excluded from score-driving selection when the address carries a
+	// higher-class row. Omitted, the built-in defaultClassRank is used.
+	ClassRank    []string                      `yaml:"classRank"`
+	Thresholds   Thresholds                    `yaml:"thresholds"`
+	AssetUSD     map[string]map[string]float64 `yaml:"assetUsd"`
+	CoverageTier map[string]string             `yaml:"coverageTier"`
 }
 
 // typeWeight is one entity type of the profile.
@@ -204,6 +209,7 @@ type method struct {
 	alias              []compiledAlias
 	sources            []compiledSource
 	sourcePref         []string
+	classRank          []string
 	th                 Thresholds
 	assetUSD           map[string]map[string]float64
 	coverage           map[string]string
@@ -300,6 +306,10 @@ func compileMethod(mc MethodConfig) (*method, error) {
 		m.sources = append(m.sources, compiledSource{match: re, class: s.Class})
 	}
 	m.sourcePref = mc.SourcePreference
+	m.classRank = mc.ClassRank
+	if len(m.classRank) == 0 {
+		m.classRank = slices.Clone(defaultClassRank)
+	}
 	m.th = withDefaults(mc.Thresholds)
 	// A call without max_hops takes this one, so it is held to the same cap
 	// as the parameter.
@@ -445,6 +455,43 @@ func (m *method) sourceClass(source string) string {
 		}
 	}
 	return ""
+}
+
+// communityClass is the lowest-trust label source class the eligibility rule
+// targets: its rows never set the direct floor or fire the dust flag, and are
+// excluded from score-driving selection when the address carries a higher-class
+// row. The class ranking is configurable (classRank); the name of the targeted
+// tier is the method's fixed "community".
+const communityClass = "community"
+
+// defaultClassRank orders the label source classes by trust, highest first. It
+// is used when the configuration sets no classRank, so the offline tests and a
+// configuration that omits the key behave the same.
+var defaultClassRank = []string{"sanctions-list", "curated", "vendor", "research", "heuristic", "community"}
+
+// classRankOf is a class's trust rank (0 = most trusted); a class not in
+// classRank ranks below every listed one.
+func (m *method) classRankOf(class string) int {
+	if i := slices.Index(m.classRank, class); i >= 0 {
+		return i
+	}
+	return len(m.classRank)
+}
+
+// rowIsCommunity reports whether a label source is of the community class.
+func (m *method) rowIsCommunity(source string) bool {
+	return m.sourceClass(source) == communityClass
+}
+
+// attributionIsCommunity reports whether the row a direction was attributed to
+// is community-class. A community row never sets the direct floor, on any
+// address — even one with only community rows, where it is still the chosen
+// attribution.
+func (m *method) attributionIsCommunity(at attribution) bool {
+	if at.SourceClass != "" {
+		return at.SourceClass == communityClass
+	}
+	return m.rowIsCommunity(at.Label.Row.Source)
 }
 
 // entityKey names the entity a label value stands for; "" = it names none.
