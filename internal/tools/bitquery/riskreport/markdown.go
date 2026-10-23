@@ -160,18 +160,26 @@ func markdownReport(rep *reportOut) string {
 	fmt.Fprintf(&b, "## Exposure\n\n")
 	fmt.Fprintf(&b, "Asset %s: received %s, sent %s, balance %s. USD basis: %s.\n",
 		a.Symbol, rep.Summary.Received, rep.Summary.Sent, rep.Summary.Balance, p.USDConversion)
-	if rep.Exposure != "" {
+	switch {
+	case emptyScored:
+		// Nothing was scored: one line only. The "no labelled exposure in the
+		// scored flow" text would contradict it, and an "unattributed 0, 0" line
+		// would read as "all attributed"; point at the flags when any fired.
+		msg := emptyFlowReason(rep)
+		if rep.Exposure == noExposureFlagged {
+			msg += " — see flags"
+		}
+		fmt.Fprintf(&b, "%s\n", sentence(msg))
+	case rep.Exposure != "":
 		fmt.Fprintf(&b, "%s.\n", rep.Exposure)
-	} else {
+	default:
 		fmt.Fprintf(&b, "Attributed %.2f%% of analysed flow to %d labelled connection(s).\n",
 			rep.Summary.AttributedPct, len(rep.Connections))
 	}
-	if emptyScored {
-		// Nothing was scored: an "unattributed 0, 0" line would read as "all
-		// attributed", so say plainly that no flow passed the threshold.
-		fmt.Fprintf(&b, "%s\n", sentence(emptyFlowReason(rep)))
-	} else if u := unattributedLine(rep, a.Symbol); u != "" {
-		fmt.Fprintf(&b, "%s\n", u)
+	if !emptyScored {
+		if u := unattributedLine(rep, a.Symbol); u != "" {
+			fmt.Fprintf(&b, "%s\n", u)
+		}
 	}
 	b.WriteString("\n")
 

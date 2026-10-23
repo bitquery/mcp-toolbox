@@ -114,11 +114,26 @@ func TestMarkdownEmptyScoredFlow(t *testing.T) {
 	if !strings.Contains(md, "- none: all transfers are at or below min_amount_usd (100 USD), so no flow was scored") {
 		t.Errorf("Drivers 'none' line missing or wrong:\n%s", md)
 	}
-	if !strings.Contains(md, "All transfers are at or below min_amount_usd (100 USD), so no flow was scored.") {
-		t.Errorf("Exposure does not explain the empty flow:\n%s", md)
+	if !strings.Contains(md, "All transfers are at or below min_amount_usd (100 USD), so no flow was scored — see flags.") {
+		t.Errorf("Exposure does not explain the empty flow with a flags pointer:\n%s", md)
+	}
+	// The contradictory "no labelled exposure in the scored flow" line is gone.
+	if strings.Contains(md, "no labelled exposure in the scored flow") {
+		t.Errorf("the contradictory no-exposure line is still present:\n%s", md)
 	}
 	if strings.Contains(md, "Unattributed TRX: received 0.000000") {
 		t.Errorf("the misleading zero Unattributed line is still present:\n%s", md)
+	}
+	// With no flags (noExposure), the one line carries no "see flags" pointer.
+	rep.Exposure = noExposure
+	rep.Flags = nil
+	rep.Params.FlagsStatus = map[string]string{"frozen": "not_evaluated"}
+	md2 := markdownReport(rep)
+	if !strings.Contains(md2, "All transfers are at or below min_amount_usd (100 USD), so no flow was scored.") {
+		t.Errorf("no-flags empty report should end the line at 'scored.':\n%s", md2)
+	}
+	if strings.Contains(md2, "so no flow was scored — see flags") {
+		t.Errorf("no-flags empty report must not point at flags:\n%s", md2)
 	}
 }
 
