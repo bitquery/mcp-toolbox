@@ -19,6 +19,7 @@ package riskreport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -251,6 +252,12 @@ type request struct {
 	w         window
 	minUSD    float64
 	weights   weights
+	// viewCoerced: the caller asked for (or defaulted to) view all on a chain
+	// that only has the direct view, so it was run as direct and the report says so.
+	viewCoerced bool
+	// windowed: the report covers a sub-window (a start, or an end before now),
+	// so lifetime totals do not apply to the summary.
+	windowed bool
 }
 
 func agentErr(format string, a ...any) util.ToolboxError {
@@ -276,22 +283,36 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		r.view = "direct"
 	}
 	if r.chain == "" {
-		return r, agentErr("chain is required (tron)")
+		return r, agentErr("chain is required (tron or bitcoin)")
 	}
 	if !slices.Contains(supportedChains, r.chain) {
-		return r, agentErr("chain %q is not supported; use tron", truncate(r.chain, 32))
+		return r, agentErr("chain %q is not supported; use tron or bitcoin", truncate(r.chain, 32))
 	}
-	if r.chain != "tron" {
-		return r, agentErr("chain %s is not available yet in this report; use tron", r.chain)
+	if r.chain != "tron" && r.chain != "bitcoin" {
+		return r, agentErr("chain %s is not available yet in this report; use tron or bitcoin", r.chain)
 	}
-	if !tronAddressRe.MatchString(r.address) {
-		return r, agentErr("address must be a Tron base58 address (T followed by 33 characters)")
+	switch r.chain {
+	case "bitcoin":
+		if !bitcoinAddressRe.MatchString(r.address) {
+			return r, agentErr("address must be a Bitcoin address (1..., 3... or bc1...)")
+		}
+	default:
+		if !tronAddressRe.MatchString(r.address) {
+			return r, agentErr("address must be a Tron base58 address (T followed by 33 characters)")
+		}
 	}
 	if !slices.Contains([]string{"both", "received", "sent"}, r.direction) {
 		return r, agentErr("direction must be one of: both, received, sent")
 	}
 	if r.view != "direct" && r.view != "all" {
 		return r, agentErr("view must be direct or all")
+	}
+	// The multi-hop search is Tron-only for now; on bitcoin a request for view all
+	// (including the default) RUNS the direct view and the report says so, rather
+	// than refusing — a bare call must not fail.
+	if r.chain == "bitcoin" && r.view == "all" {
+		r.view = "direct"
+		r.viewCoerced = true
 	}
 	switch f := strings.ToLower(str("format")); f {
 	case "", "markdown":
@@ -305,11 +326,19 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	default:
 		return r, agentErr("format must be markdown or json")
 	}
-	a, set, err := parseTronAsset(str("asset"))
-	if err != nil {
-		return r, util.NewAgentError(err.Error(), nil)
+	if r.chain == "bitcoin" {
+		// Bitcoin has one asset, BTC; accept "" or "BTC", refuse a token.
+		if as := strings.TrimSpace(str("asset")); as != "" && !strings.EqualFold(as, "BTC") {
+			return r, agentErr("on bitcoin the only asset is BTC; leave asset empty or set it to BTC")
+		}
+		r.asset, r.assetSet = tronAsset{}, false
+	} else {
+		a, set, err := parseTronAsset(str("asset"))
+		if err != nil {
+			return r, util.NewAgentError(err.Error(), nil)
+		}
+		r.asset, r.assetSet = a, set
 	}
-	r.asset, r.assetSet = a, set
 	if v, ok := p["min_amount_usd"]; ok && v != nil {
 		f, ok := toFloat(v)
 		if !ok || f < 0 {
@@ -340,6 +369,7 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		return r, agentErr("before_time must be later than 0001-01-01")
 	}
 	given := r.w.Before
+	pin := time.Now().UTC().Truncate(time.Second)
 	r.w = pinWindow(r.w, time.Now())
 	if !r.w.After.Before(r.w.Before) {
 		if !given.IsZero() && given.Equal(r.w.Before) {
@@ -347,6 +377,10 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		}
 		return r, agentErr("after_time must be in the past")
 	}
+	// windowed: a real sub-window — a start, or a caller-supplied end in the past
+	// (a future or absent before_time pins to now = whole history). Lifetime
+	// totals apply only to the whole-history report.
+	r.windowed = !r.w.After.IsZero() || (!given.IsZero() && given.Before(pin))
 	override, _ := p["weights"].(map[string]any)
 	w, werr := t.m.mergeWeights(override)
 	if werr != nil {
@@ -471,6 +505,12 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	ex := &executor{src: src, labels: t.labels, th: t.m.th}
 	rep, err := t.direct(ctx, ex, req)
 	if err != nil {
+		// An honest refusal (e.g. a window too large to total) is already a
+		// categorised agent error; surface it as-is rather than re-wrapping it.
+		var te util.ToolboxError
+		if errors.As(err, &te) {
+			return nil, te
+		}
 		return nil, util.ProcessGeneralError(err)
 	}
 	rep.Cost = ex.cost
@@ -529,11 +569,17 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	rep.Params.DataAsOf = req.w.Before.UTC().Format(time.RFC3339)
 
 	// 1. Every asset of the address.
-	assets, err := ex.assets(ctx, req.address, req.w)
+	var assets assetsResult
+	var err error
+	if req.chain == "bitcoin" {
+		assets, err = ex.assetsBitcoin(ctx, req.address, req.w, req.windowed)
+	} else {
+		assets, err = ex.assets(ctx, req.address, req.w)
+	}
 	if err != nil {
 		return nil, err
 	}
-	asset, row, ok := pickAsset(assets, req, m.assetUSD["tron"])
+	asset, row, ok := pickAsset(assets, req, m.assetUSD[req.chain])
 	if !ok {
 		if req.assetSet {
 			return nil, fmt.Errorf("the address has no transfers of asset %s in the window", req.asset.Key)
@@ -545,10 +591,16 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	// way price_at reads it. A price lets min_amount_usd and the dust and
 	// look-alike thresholds, and the direct floor, apply in USD; without one none
 	// of them is applied (the native dust fallback aside).
-	price := m.assetUSD["tron"][asset.Key]
+	price := m.assetUSD[req.chain][asset.Key]
 	priceFromStore := false
 	if price <= 0 {
-		p, perr := ex.price(ctx, asset, req.w.Before)
+		var p float64
+		var perr error
+		if req.chain == "bitcoin" {
+			p, perr = ex.priceBitcoin(ctx, req.w.Before)
+		} else {
+			p, perr = ex.price(ctx, asset, req.w.Before)
+		}
 		if perr != nil {
 			// The deadline or the row budget stops the whole report, as any other
 			// statement does; a store that is merely unavailable must not, so the
@@ -578,8 +630,15 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 
 	// 2. The 1-hop counterparties, in the report asset and in every other one.
-	edges, other, err := ex.counterparties(ctx, cpInput{Addr: req.address, Asset: asset, W: req.w, FirstIn: row.firstIn, MinRaw: minRaw, DustRaw: dustRaw,
-		NativeDust: th.NativeDustUnits, EarlyDays: th.PassThroughDays, Limit: th.CounterpartyLimit})
+	var edges edgesResult
+	var other otherResult
+	cpIn := cpInput{Addr: req.address, Asset: asset, W: req.w, FirstIn: row.firstIn, MinRaw: minRaw, DustRaw: dustRaw,
+		NativeDust: th.NativeDustUnits, EarlyDays: th.PassThroughDays, Limit: th.CounterpartyLimit}
+	if req.chain == "bitcoin" {
+		edges, other, err = ex.counterpartiesBitcoin(ctx, cpIn)
+	} else {
+		edges, other, err = ex.counterparties(ctx, cpIn)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -993,7 +1052,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 
 	// Poisoning.
 	looks := findLookalikes(poisoningInput{Target: req.address, Asset: edges.rows, Other: other.rows, DustRaw: dustRaw, CapRaw: capRaw,
-		MinMatch: th.LookalikeMinSuffix, PrefixSkip: tronPrefixSkip, Decimals: asset.Decimals})
+		MinMatch: th.LookalikeMinSuffix, PrefixSkip: chainPrefixSkip(req.chain), Decimals: asset.Decimals})
 	if len(looks) > 0 {
 		rep.Flags = append(rep.Flags, poisoningFlag(looks))
 	}
@@ -1009,6 +1068,20 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	}
 	if !edges.complete() {
 		rep.Params.Notes = append(rep.Params.Notes, "pass_through is measured on the counterparties returned; with a counterparty cut it can read low")
+	}
+	if req.chain == "bitcoin" {
+		rep.Params.Notes = append(rep.Params.Notes,
+			"bitcoin amounts are turnover (received and sent), not a single running balance; each counterparty amount is the target's pro-rata share through the inputs and outputs of each transaction, and the balance is the address's lifetime received minus sent")
+		if req.viewCoerced {
+			rep.Params.Notes = append(rep.Params.Notes, "multi-hop tracing is not available on bitcoin yet; this is the direct view")
+		}
+		if ex.btc != nil && ex.btc.coinbase {
+			rep.Params.Notes = append(rep.Params.Notes, "some receipts are newly issued coins (a coinbase transaction) with no sending counterparty; their amount is left unattributed")
+		}
+		if ex.btc != nil && ex.btc.degraded {
+			rep.Params.Complete = false
+			rep.Params.Notes = append(rep.Params.Notes, "this address is large: only its biggest transactions were analysed for counterparties and the rest are reported as a cut; the summary totals are its full lifetime totals")
+		}
 	}
 
 	status := func(typ string) string {

@@ -43,6 +43,9 @@ type executor struct {
 	cost   costOut
 	// last is how long the last statement of each kind took.
 	last map[string]time.Duration
+	// btc is the Bitcoin scratch: the receipt and spend transactions
+	// assetsBitcoin read, which counterpartiesBitcoin consumes (nil off Bitcoin).
+	btc *btcState
 }
 
 // errNoTime stops a statement the report's deadline leaves no time for.
@@ -467,12 +470,19 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 	return edges, other, nil
 }
 
-// labelRows reads the labels of a set of addresses, in batches.
+// labelRows reads the labels of a set of addresses, in batches. The addresses
+// are validated against the chain's own address form so a batch carries only
+// well-formed literals (the Tron form drops every Bitcoin address, and the
+// reverse): on Bitcoin that guard would return no labels at all.
 func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) (map[string][]labelRow, error) {
+	valid := tronAddressRe.MatchString
+	if chain == "bitcoin" {
+		valid = bitcoinAddressRe.MatchString
+	}
 	seen := map[string]bool{}
 	var uniq []string
 	for _, a := range addrs {
-		if !seen[a] && tronAddressRe.MatchString(a) {
+		if !seen[a] && valid(a) {
 			seen[a] = true
 			uniq = append(uniq, a)
 		}
