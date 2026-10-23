@@ -92,6 +92,27 @@ func intOf(v any) int {
 	return 0
 }
 
+// emptyFlowReason explains, for the human report, why no flow was scored: the
+// transfers were all at or below min_amount_usd (so the dust guard filtered
+// them), or there were no counterparties in the report asset at all. It keeps a
+// zero score from reading as "everything was attributed".
+func emptyFlowReason(rep *reportOut) string {
+	p := &rep.Params
+	hadFlow := nonZeroAmount(rep.Summary.Received) || nonZeroAmount(rep.Summary.Sent)
+	if hadFlow && p.MinAmountUSD > 0 && !strings.HasPrefix(p.USDConversion, "none") {
+		return fmt.Sprintf("all transfers are at or below min_amount_usd (%g USD), so no flow was scored", p.MinAmountUSD)
+	}
+	return "no counterparty flow in the report asset was scored"
+}
+
+// sentence capitalises the first letter (ASCII) and ends with a period.
+func sentence(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:] + "."
+}
+
 // markdownReport renders a report as a concise document.
 func markdownReport(rep *reportOut) string {
 	var b strings.Builder
@@ -107,6 +128,12 @@ func markdownReport(rep *reportOut) string {
 	fmt.Fprintf(&b, "%s\n\n", head)
 
 	sc := rep.Score
+	// emptyScored: the score has no flow behind it — no scored-flow drivers and no
+	// direct floor, and nothing was attributed (rep.Exposure holds the no-exposure
+	// text only in that case). It separates "all flow at or below min_amount_usd /
+	// no counterparties" from "flow attributed only to zero-weight types".
+	emptyScored := len(sc.TopDrivers) == 0 && sc.DirectFloor == 0 &&
+		(rep.Exposure == noExposure || rep.Exposure == noExposureFlagged)
 	fmt.Fprintf(&b, "## Score: %.1f / 100 (%s)\n\n", sc.Value, band(sc.Value))
 	fmt.Fprintf(&b, "score = max(received %s, sent %s, direct_floor %.2f) = %.1f\n\n",
 		scorePart(sc.ReceivedScore), scorePart(sc.SentScore), sc.DirectFloor, sc.Value)
@@ -114,13 +141,20 @@ func markdownReport(rep *reportOut) string {
 		fmt.Fprintf(&b, "Direct floor set by %v (%v, %v).\n\n",
 			sc.DirectFloorFrom["entity"], sc.DirectFloorFrom["entity_type"], sc.DirectFloorFrom["direction"])
 	}
-	if len(sc.TopDrivers) > 0 {
-		fmt.Fprintf(&b, "Drivers (share of the scored flow → contribution to the score):\n")
+	fmt.Fprintf(&b, "Drivers (share of the scored flow → contribution to the score):\n")
+	switch {
+	case len(sc.TopDrivers) > 0:
 		for _, d := range sc.TopDrivers {
 			fmt.Fprintf(&b, "- %s (%s): %g%% → %g\n", d.EntityType, d.Direction, d.SharePct, d.Contribution)
 		}
-		b.WriteString("\n")
+	case sc.DirectFloor > 0:
+		fmt.Fprintf(&b, "- none: the score is the direct floor (see above); no scored-flow shares apply\n")
+	case emptyScored:
+		fmt.Fprintf(&b, "- none: %s\n", emptyFlowReason(rep))
+	default:
+		fmt.Fprintf(&b, "- none: the scored flow carries no risk weight, so it contributes 0\n")
 	}
+	b.WriteString("\n")
 
 	a := rep.Summary.Asset
 	fmt.Fprintf(&b, "## Exposure\n\n")
@@ -132,7 +166,11 @@ func markdownReport(rep *reportOut) string {
 		fmt.Fprintf(&b, "Attributed %.2f%% of analysed flow to %d labelled connection(s).\n",
 			rep.Summary.AttributedPct, len(rep.Connections))
 	}
-	if u := unattributedLine(rep, a.Symbol); u != "" {
+	if emptyScored {
+		// Nothing was scored: an "unattributed 0, 0" line would read as "all
+		// attributed", so say plainly that no flow passed the threshold.
+		fmt.Fprintf(&b, "%s\n", sentence(emptyFlowReason(rep)))
+	} else if u := unattributedLine(rep, a.Symbol); u != "" {
 		fmt.Fprintf(&b, "%s\n", u)
 	}
 	b.WriteString("\n")

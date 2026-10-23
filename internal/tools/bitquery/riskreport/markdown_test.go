@@ -91,3 +91,57 @@ func TestMarkdownBoundedOnManyLookalikes(t *testing.T) {
 		t.Errorf("direct sanctions must lead the flags, before poisoning (direct at %d, poisoning at %d)", di, pi)
 	}
 }
+
+// P3-1 / P3-2: when no counterparty flow was scored (score 0, empty top_drivers,
+// no direct floor), the markdown still shows a Drivers block, and the Exposure
+// says the flow was at or below min_amount_usd instead of an "unattributed 0, 0"
+// line that reads as "all attributed".
+func TestMarkdownEmptyScoredFlow(t *testing.T) {
+	rep := &reportOut{
+		Summary:      summaryOut{Chain: "tron", Address: synth(t, "T", 1), Asset: assetOut{Symbol: "TRX"}, Received: "0.100056", Sent: "0.010720", Balance: "0.089336"},
+		Score:        scoreOut{Value: 0, TopDrivers: []driver{}},
+		Exposure:     noExposureFlagged,
+		Unattributed: map[string]string{"received": "0.000000", "sent": "0.000000"},
+		Params: paramsOut{DataAsOf: "2026-10-23T00:00:00Z", View: "direct", Complete: true, MinAmountUSD: 100,
+			USDConversion: "store: 1 TRX = 0.33 USD (as of 2026-10-23T00:00:00Z)",
+			FlagsStatus:   map[string]string{"poisoning": "found", "pass_through": "found", "frozen": "not_evaluated"}},
+		Flags: []flagOut{{Type: "poisoning", Detail: map[string]any{"count": 3}}},
+	}
+	md := markdownReport(rep)
+	if !strings.Contains(md, "Drivers (share of the scored flow → contribution to the score):") {
+		t.Errorf("no Drivers header on an empty-flow report:\n%s", md)
+	}
+	if !strings.Contains(md, "- none: all transfers are at or below min_amount_usd (100 USD), so no flow was scored") {
+		t.Errorf("Drivers 'none' line missing or wrong:\n%s", md)
+	}
+	if !strings.Contains(md, "All transfers are at or below min_amount_usd (100 USD), so no flow was scored.") {
+		t.Errorf("Exposure does not explain the empty flow:\n%s", md)
+	}
+	if strings.Contains(md, "Unattributed TRX: received 0.000000") {
+		t.Errorf("the misleading zero Unattributed line is still present:\n%s", md)
+	}
+}
+
+// With an empty top_drivers but a nonzero direct floor, the score comes from the
+// floor; the Drivers block says so and the Exposure keeps its normal line (the
+// below-threshold sentence is only for a zero-floor empty report).
+func TestMarkdownEmptyDriversWithDirectFloor(t *testing.T) {
+	rep := &reportOut{
+		Summary:      summaryOut{Chain: "tron", Address: synth(t, "T", 2), Asset: assetOut{Symbol: "USDT"}, Received: "5.0", Sent: "0.0", Balance: "5.0"},
+		Score:        scoreOut{Value: 100, DirectFloor: 100, TopDrivers: []driver{}, DirectFloorFrom: map[string]any{"entity": "ml", "entity_type": "Illegal Service", "direction": "received"}},
+		Unattributed: map[string]string{"received": "0.000000", "sent": "0.000000"},
+		Params: paramsOut{DataAsOf: "2026-10-23T00:00:00Z", View: "direct", Complete: true, MinAmountUSD: 100,
+			USDConversion: "constant: 1 USDT = 1 USD", FlagsStatus: map[string]string{"frozen": "not_evaluated"}},
+		Flags: []flagOut{},
+	}
+	md := markdownReport(rep)
+	if !strings.Contains(md, "- none: the score is the direct floor") {
+		t.Errorf("Drivers block does not attribute the score to the direct floor:\n%s", md)
+	}
+	if strings.Contains(md, "no flow was scored") {
+		t.Errorf("a direct-floor score must not say 'no flow was scored':\n%s", md)
+	}
+	if !strings.Contains(md, "Unattributed USDT: received 0.000000, sent 0.000000.") {
+		t.Errorf("the unattributed line should be kept when a direct floor set the score:\n%s", md)
+	}
+}
