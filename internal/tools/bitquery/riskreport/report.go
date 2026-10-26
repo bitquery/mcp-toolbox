@@ -604,11 +604,19 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	// of them is applied (the native dust fallback aside).
 	price := m.assetUSD[req.chain][asset.Key]
 	priceFromStore := false
+	// The hour the store price is as of. It is the pin for a constant price and
+	// for Tron (its range-keyed dictionary answers at the pin); Bitcoin's read
+	// may fall back to an earlier hour and reports which one.
+	priceAsOf := req.w.Before
 	if price <= 0 {
 		var p float64
 		var perr error
 		if req.chain == "bitcoin" {
-			p, perr = ex.priceBitcoin(ctx, req.w.Before)
+			var at time.Time
+			p, at, perr = ex.priceBitcoin(ctx, req.w.Before)
+			if perr == nil && p > 0 {
+				priceAsOf = at
+			}
 		} else {
 			p, perr = ex.price(ctx, asset, req.w.Before)
 		}
@@ -629,7 +637,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	capRaw := usdRaw(th.LookalikeAmountCapUSD, price, asset.Decimals)
 	switch {
 	case price > 0 && priceFromStore:
-		rep.Params.USDConversion = fmt.Sprintf("store: 1 %s = %g USD (as of %s)", asset.Symbol, round(price, 2), rep.Params.DataAsOf)
+		rep.Params.USDConversion = fmt.Sprintf("store: 1 %s = %g USD (as of %s)", asset.Symbol, round(price, 2), priceAsOf.UTC().Format(time.RFC3339))
 	case price > 0:
 		rep.Params.USDConversion = fmt.Sprintf("constant: 1 %s = %g USD", asset.Symbol, price)
 	default:

@@ -327,14 +327,15 @@ func (e *executor) assetsBitcoin(ctx context.Context, addr string, w window, win
 	return assetsResult{rows: []assetRow{row}}, nil
 }
 
-// priceBitcoin reads BTC's USD price from the chain's price store at the pin, as
-// one billed statement counted in the report's cost (named "price"). It returns
-// 0 and no error when the store has no price for BTC then, so a miss is never
-// read as 0 USD by the caller.
-func (e *executor) priceBitcoin(ctx context.Context, pin time.Time) (float64, error) {
+// priceBitcoin reads BTC's USD price from the chain's price store at or before
+// the pin, as one billed statement counted in the report's cost (named "price").
+// It returns the price and the hour it is as of; 0 and the zero time with no
+// error when the store has no price for BTC in the day before the pin, so a miss
+// is never read as 0 USD by the caller.
+func (e *executor) priceBitcoin(ctx context.Context, pin time.Time) (float64, time.Time, error) {
 	maxRows, err := e.maxRows()
 	if err != nil {
-		return 0, err
+		return 0, time.Time{}, err
 	}
 	// The price read touches no transfer table, only the price dictionary, so it
 	// names no table in the X-Bitquery-Table header (unlike the Tron price read,
@@ -342,20 +343,27 @@ func (e *executor) priceBitcoin(ctx context.Context, pin time.Time) (float64, er
 	// gateway routes or bills a table header, so an empty one cannot misroute it.
 	rows, err := e.query(ctx, "price", "", btcPriceStatement(pin, maxRows, e.secs(ctx)))
 	if err != nil {
-		return 0, err
+		return 0, time.Time{}, err
 	}
 	if len(rows) == 0 {
-		return 0, nil
+		return 0, time.Time{}, nil
 	}
-	s := strings.TrimSpace(asStr(rows[0]["Price"]))
+	s := strings.TrimSpace(asStr(rows[0]["price"]))
 	if s == "" {
-		return 0, nil
+		return 0, time.Time{}, nil
 	}
 	f, perr := strconv.ParseFloat(s, 64)
 	if perr != nil || f <= 0 || math.IsInf(f, 0) || math.IsNaN(f) {
-		return 0, nil
+		return 0, time.Time{}, nil
 	}
-	return f, nil
+	// The hour the price is as of, formatted by the statement as RFC3339; if it
+	// cannot be parsed the price is still valid, so fall back to the pin for the
+	// label only.
+	asof, aerr := time.Parse(time.RFC3339, strings.TrimSpace(asStr(rows[0]["asof"])))
+	if aerr != nil {
+		asof = pin
+	}
+	return f, asof.UTC(), nil
 }
 
 // counterpartiesBitcoin attributes the target's receipts and spends to the

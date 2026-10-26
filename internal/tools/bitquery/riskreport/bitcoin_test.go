@@ -42,6 +42,10 @@ type fakeBtcChain struct {
 	inputs   map[btcTxKey][]map[string]any
 	outputs  map[btcTxKey][]map[string]any
 	price    string
+	// priceAsOf is the RFC3339 hour the canned price is as of (the newest priced
+	// hour the real fallback statement would return); empty lets priceBitcoin
+	// label it the pin.
+	priceAsOf string
 	// addrXfers is the lifetime-totals row (whole-history summary).
 	addrXfers map[string]any
 	// aggErr is returned for a full agg (windowed summary) read; partsErr for any
@@ -110,11 +114,16 @@ func (f *fakeBtcChain) RunRequest(_ context.Context, req *http.Request) (any, er
 	var rows []map[string]any
 	switch {
 	case strings.Contains(s, "dictHas('market_price'"):
-		var p any
+		// The real statement returns the newest priced hour at or before the pin,
+		// or no row when none in the day has a price. Mirror that: a row with the
+		// canned price and its as-of hour, or no row when price is unset.
 		if f.price != "" {
-			p = f.price
+			r := map[string]any{"price": f.price}
+			if f.priceAsOf != "" {
+				r["asof"] = f.priceAsOf
+			}
+			rows = []map[string]any{r}
 		}
-		rows = []map[string]any{{"Price": p}}
 	case strings.Contains(s, "bitcoin_flow.address_transfers"):
 		if f.addrXfers != nil {
 			rows = []map[string]any{f.addrXfers}
@@ -626,5 +635,33 @@ func TestBitcoinPartialSideKeepsReadChunks(t *testing.T) {
 	}
 	if out["params"].(map[string]any)["complete"] != false {
 		t.Errorf("complete = %v, want false (a chunk was refused)", out["params"].(map[string]any)["complete"])
+	}
+}
+
+// When the Bitcoin price read lands on an earlier hour than the pin (the
+// top-of-hour slot was briefly absent and the statement fell back to the newest
+// present hour), the price still applies and usd_conversion reports the hour the
+// price is actually as of, not the pin. The statement also carries the
+// hour-walk-back shape, so a refactor that drops the fallback is caught.
+func TestBtcPriceAsOfFallback(t *testing.T) {
+	btc := btcSampleChain()
+	btc.priceAsOf = "2026-09-05T00:00:00Z"
+	tool := newBtcTestTool(t, btc, btcSampleLabels())
+	res, err := tool.Invoke(context.Background(), btc, mustParams(t, tool, map[string]any{"chain": "bitcoin", "address": btcTarget}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := decode(t, res)
+	if usd, _ := out["params"].(map[string]any)["usd_conversion"].(string); usd != "store: 1 BTC = 100000 USD (as of 2026-09-05T00:00:00Z)" {
+		t.Errorf("usd_conversion = %q, want the fallback hour", usd)
+	}
+	var priceStmt string
+	for _, s := range btc.statements {
+		if strings.Contains(s, "dictHas('market_price'") {
+			priceStmt = s
+		}
+	}
+	if !strings.Contains(priceStmt, "arrayJoin(range(") || !strings.Contains(priceStmt, "ORDER BY h DESC") {
+		t.Errorf("btc price statement is not the hour-fallback shape:\n%s", priceStmt)
 	}
 }

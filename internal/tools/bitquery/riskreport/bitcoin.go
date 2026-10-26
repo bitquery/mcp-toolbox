@@ -297,14 +297,23 @@ ORDER BY block, tx_index
 FORMAT JSON`, table, btcTxWhere(keys), btcSettings(maxRows, maxResult, maxSeconds), txHash)
 }
 
-// btcPriceStatement reads BTC's USD price from the chain's range-keyed price
-// dictionary at the report's pin, the way price_at reads it: the key is
-// cityHash-like composite (currency id in the high 32 bits, the hour start in
-// the low 32). The engine has no dictGetOrNull, so dictHas gates the read; a
-// miss returns "" (read as no price, never as 0). The pin is a formatted time.
+// btcPriceStatement reads BTC's USD price from the chain's price dictionary at
+// or before the report's pin, the way price_at reads it: the key is a composite
+// (currency id in the high 32 bits, the hour start in the low 32). The
+// dictionary is keyed by the exact hour slot and has no range semantics, so the
+// slot for the pin's own hour can be briefly absent at the top of an hour while
+// the feed catches up. To keep a live report from losing every USD threshold in
+// that window, the read walks back from the pin's hour up to 24 hours and
+// returns the newest hour that has a price, with that hour as asof (the caller
+// prints it). No priced hour in the day returns no row (read as no price, never
+// 0). The engine has no dictGetOrNull, so dictHas gates the read.
 func btcPriceStatement(pin time.Time, maxRows int64, maxSeconds int) string {
-	key := fmt.Sprintf("toUInt64(toUInt32(toStartOfHour(%s))) + bitShiftLeft(toUInt64(%d), 32)", btcTimeLit(pin), btcCurrencyID)
-	return fmt.Sprintf(`SELECT if(dictHas('market_price', %[1]s), toString(dictGetFloat32('market_price', 'usd', %[1]s)), '') AS Price
-%[2]s
-FORMAT JSON`, key, btcSettings(maxRows, 1, maxSeconds))
+	key := fmt.Sprintf("toUInt64(toUInt32(h)) + bitShiftLeft(toUInt64(%d), 32)", btcCurrencyID)
+	return fmt.Sprintf(`SELECT formatDateTime(h, '%%FT%%TZ') AS asof, toString(dictGetFloat32('market_price', 'usd', %[1]s)) AS price
+FROM (SELECT toStartOfHour(%[2]s) - (arrayJoin(range(25)) * 3600) AS h)
+WHERE dictHas('market_price', %[1]s)
+ORDER BY h DESC
+LIMIT 1
+%[3]s
+FORMAT JSON`, key, btcTimeLit(pin), btcSettings(maxRows, 1, maxSeconds))
 }
