@@ -627,7 +627,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			if classifyLimit(ctx, perr) == stopLimit {
 				return nil, perr
 			}
-			rep.Params.Notes = append(rep.Params.Notes, "a USD price for the report asset could not be read, so min_amount_usd and the dust and look-alike thresholds are not applied to it")
+			rep.Params.Notes = append(rep.Params.Notes, "a USD price for the report asset could not be read, so min_amount_usd and the dust and look-alike thresholds are not applied to it, and no counterparty sets the direct floor")
 		} else if p > 0 {
 			price, priceFromStore = p, true
 		}
@@ -641,7 +641,7 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	case price > 0:
 		rep.Params.USDConversion = fmt.Sprintf("constant: 1 %s = %g USD", asset.Symbol, price)
 	default:
-		rep.Params.USDConversion = "none: no USD price for this asset, so min_amount_usd and the dust and look-alike thresholds are not applied to it"
+		rep.Params.USDConversion = "none: no USD price for this asset, so min_amount_usd and the dust and look-alike thresholds are not applied to it, and no counterparty sets the direct floor"
 		minRaw, capRaw = new(big.Int), new(big.Int)
 		if asset.Native {
 			dustRaw = big.NewInt(th.NativeDustUnits)
@@ -935,10 +935,13 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			// from a higher-trust identity (invariant, never conditional).
 			sameEnt := sameEntity(at, c.Address)
 			// Only a counterparty that is itself a connection — a transfer above
-			// min_amount_usd (the same bar line ~954 uses) — sets the floor. Sub-min
-			// dust must not pin the score to a high-risk type it only brushed
-			// against (poisoning-shaped): it stays below the connection threshold.
-			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && c.RawAboveMin.Sign() > 0 && !sameEnt && !m.attributionIsCommunity(at) {
+			// min_amount_usd (the same bar line ~954 uses) — sets the floor, and
+			// only when that bar was actually applied (minRaw > 0, a USD price was
+			// found). Without a price min_amount_usd is 0 and every counterparty
+			// reads as above it, so an unpriced sub-min dust touch must not set the
+			// floor: the floor is a USD-gated verdict. The connection is still kept
+			// as evidence, and a sanctioned contact still raises direct_sanctions.
+			if f := req.weights.factor(at.Label.Type, c.Dir); f > directFloor && c.RawAboveMin.Sign() > 0 && minRaw.Sign() > 0 && !sameEnt && !m.attributionIsCommunity(at) {
 				directFloor = f
 				floorFrom = map[string]any{"counterparty": c.Address, "direction": c.Dir.String(), "entity": displayEntity(at, c.Address),
 					"entity_type": at.Label.Type, "amount": formatUnits(c.Raw, asset.Decimals), "transfers": c.Transfers, "evidence_txs": c.TxAboveDust}

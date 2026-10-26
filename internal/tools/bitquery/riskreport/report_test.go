@@ -722,6 +722,69 @@ func TestSubMinContactDoesNotFloor(t *testing.T) {
 	}
 }
 
+// With no USD price for the asset, min_amount_usd cannot be applied, so every
+// counterparty reads as above the (zero) bar. A labelled high-risk contact must
+// still NOT set the direct floor in that state — the floor needs a USD bar that
+// was actually applied (minRaw > 0), or an unpriced sub-min dust touch would pin
+// the score the way it did for a Bitcoin exchange wallet in the v0.16.3
+// acceptance. The contact is still listed as a connection (evidence is kept,
+// only the verdict is withheld), and a sanctioned contact still raises
+// direct_sanctions. TRX with price "" is the no-price asset (USDT is a constant).
+func TestNoPriceDoesNotFloor(t *testing.T) {
+	const illegal = "TB8hKVScKC9w8QnDnNKJyDwjAPf37rJQfB"
+	run := func(rows []map[string]any) map[string]any {
+		chain := &fakeChain{
+			price:  "",
+			assets: []map[string]any{trxAssetRow("0", "1000000000", 0, 1)},
+			edges: []map[string]any{
+				edgeRow("out", illegal, "1000000000", "1000000000", "1000000000", 1, [4]string{"1", "1", "1000000000", "1000000000"}, "ff"),
+			},
+		}
+		labels := &fakeLabels{rows: map[string][]map[string]any{illegal: rows}}
+		tool := newTestTool(t, chain, labels)
+		res, err := tool.Invoke(context.Background(), chain, mustParams(t, tool, map[string]any{"chain": "tron", "address": at5Target}), "")
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		return decode(t, res)
+	}
+
+	// A weight-100 Illegal-Service contact, no price: the floor would have fired
+	// under min_amount_usd = 0, but the guard keeps it 0. The connection is kept,
+	// and the note says the floor was withheld.
+	out := run([]map[string]any{{"label_type": "money-laundering", "label_value": "ml-entity", "source": "vendor-x", "recorded_at": "2026-01-01 00:00:00"}})
+	score := out["score"].(map[string]any)
+	if score["direct_floor"].(float64) != 0 {
+		t.Errorf("no-price direct_floor = %v, want 0 (no USD bar applied)", score["direct_floor"])
+	}
+	if score["direct_floor_from"] != nil {
+		t.Errorf("no-price direct_floor_from = %v, want nil", score["direct_floor_from"])
+	}
+	if usd, _ := out["params"].(map[string]any)["usd_conversion"].(string); !strings.HasPrefix(usd, "none") || !strings.Contains(usd, "no counterparty sets the direct floor") {
+		t.Errorf("usd_conversion = %q, want none with the floor note", usd)
+	}
+	if conns, _ := out["connections"].([]any); len(conns) == 0 {
+		t.Errorf("no-price connections = 0, want the contact kept as evidence")
+	}
+
+	// A sanctioned contact, no price: the floor is still withheld, but
+	// direct_sanctions fires regardless (the flag does not depend on the bar).
+	out = run([]map[string]any{{"label_type": "sanctioned-entity", "label_value": "sanctioned-xinbi-guarantee", "source": "ofac", "recorded_at": "2026-05-01 00:00:00"}})
+	score = out["score"].(map[string]any)
+	if score["direct_floor"].(float64) != 0 {
+		t.Errorf("no-price sanctioned direct_floor = %v, want 0", score["direct_floor"])
+	}
+	found := false
+	for _, f := range out["flags"].([]any) {
+		if f.(map[string]any)["type"] == "direct_sanctions" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no-price sanctioned: direct_sanctions not found: %v", out["flags"])
+	}
+}
+
 // P3-4: a transfer to the target's own entity is marked same_entity, left out
 // of the score, and kept in the output and breakdown. The same-entity leg here
 // is on the sent side under a type with sending level None, so the score (set
