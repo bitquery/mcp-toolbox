@@ -36,6 +36,13 @@ import (
 // row budget end most searches sooner.
 const maxHopsCap = 6
 
+// summaryAssetsCap bounds the assets listed in the summary (the largest by
+// transfer count). The address can hold far more — Ethereum airdrops hundreds of
+// spam tokens onto any active address — and listing them all bloated the report
+// past a client's response cap; summary.assets_total / assets_omitted carry the
+// counts, and the report asset is always in summary.asset.
+const summaryAssetsCap = 20
+
 // noExposure is the answer when no counterparty carries an entity label. It
 // never says the address is clean: only that our labels found nothing.
 // noExposureFlagged replaces it when the report still raised risk flags (dust
@@ -84,10 +91,18 @@ type summaryOut struct {
 	FirstActivityAny string     `json:"first_activity_any"`
 	LastActivityAny  string     `json:"last_activity_any"`
 	Assets           []assetOut `json:"assets"`
-	AssetsTruncated  bool       `json:"assets_truncated,omitempty"`
-	Labels           ownLabels  `json:"labels"`
-	CoverageTier     string     `json:"coverage_tier"`
-	AttributedPct    float64    `json:"attributed_pct"`
+	// AssetsTotal is how many assets the address holds (up to the read cap of 200;
+	// AssetsTruncated says that cap was hit, so the true total may be higher).
+	// AssetsOmitted is how many are not in the Assets list, which is capped to the
+	// largest summaryAssetsCap by transfer count so the report stays small (an
+	// Ethereum address collects hundreds of spam-airdrop tokens). The report asset
+	// itself is always in Asset, whether or not it is in this list.
+	AssetsTotal     int       `json:"assets_total,omitempty"`
+	AssetsOmitted   int       `json:"assets_omitted,omitempty"`
+	AssetsTruncated bool      `json:"assets_truncated,omitempty"`
+	Labels          ownLabels `json:"labels"`
+	CoverageTier    string    `json:"coverage_tier"`
+	AttributedPct   float64   `json:"attributed_pct"`
 }
 
 type scoreOut struct {
@@ -798,9 +813,19 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	if !req.w.After.IsZero() {
 		rep.Params.Notes = append(rep.Params.Notes, "balance is over the whole history up to before_time; received, sent, tx_count and activity are in the window")
 	}
-	for _, a := range assets.rows {
-		rep.Summary.Assets = append(rep.Summary.Assets, a.out())
+	// The assets list is capped to the largest summaryAssetsCap (the read already
+	// ordered them by transfer count): an Ethereum address collects hundreds of
+	// spam-airdrop tokens, and all of them serialized once bloated a report past a
+	// client's response cap. assets_total and assets_omitted say how many there
+	// are; the report asset itself is always in summary.asset.
+	rep.Summary.AssetsTotal = len(assets.rows)
+	for i := range assets.rows {
+		if i >= summaryAssetsCap {
+			break
+		}
+		rep.Summary.Assets = append(rep.Summary.Assets, assets.rows[i].out())
 	}
+	rep.Summary.AssetsOmitted = rep.Summary.AssetsTotal - len(rep.Summary.Assets)
 	// On a whole-history Bitcoin report the per-side transaction list is capped,
 	// so transfers/tx_count are that cap, not the true counts: flag it rather than
 	// let the capped number read as real. received, sent and balance stay exact.

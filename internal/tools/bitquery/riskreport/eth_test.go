@@ -16,6 +16,7 @@ package riskreport
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -333,5 +334,30 @@ func TestEthereumTokenFetchesNativeDustPrice(t *testing.T) {
 	}
 	if strings.Contains(cp, "Transfer_Currency_Native = 1 AND Transfer_Amount <= toUInt256(10)") {
 		t.Errorf("token report used the unit-count native dust bar instead of the wei bar:\n%s", cp)
+	}
+}
+
+// An address holding more than summaryAssetsCap assets (an Ethereum address
+// collects hundreds of spam-airdrop tokens): summary.assets is capped to the
+// largest summaryAssetsCap, and assets_total / assets_omitted carry the counts
+// so the report stays small.
+func TestEthereumAssetsCapped(t *testing.T) {
+	const n = 25
+	var assets []map[string]any
+	for i := 1; i <= n; i++ {
+		assets = append(assets, ethTokenAssetRow(fmt.Sprintf("0x%040x", i), fmt.Sprintf("T%d", i), "1000000", "0", n+1-i, 0))
+	}
+	eth := &fakeEthChain{price: "2500", assets: assets}
+	tool := newEthTestTool(t, eth, &fakeLabels{})
+	res, err := tool.Invoke(context.Background(), eth, mustParams(t, tool, map[string]any{"chain": "ethereum", "address": ethTarget}), "")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	sum := decode(t, res)["summary"].(map[string]any)
+	if al := sum["assets"].([]any); len(al) != summaryAssetsCap {
+		t.Errorf("assets list = %d, want the cap %d", len(al), summaryAssetsCap)
+	}
+	if sum["assets_total"].(float64) != n || sum["assets_omitted"].(float64) != float64(n-summaryAssetsCap) {
+		t.Errorf("assets_total=%v assets_omitted=%v, want %d / %d", sum["assets_total"], sum["assets_omitted"], n, n-summaryAssetsCap)
 	}
 }

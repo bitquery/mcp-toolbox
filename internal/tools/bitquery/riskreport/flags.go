@@ -215,8 +215,13 @@ type passThrough struct {
 }
 
 // passThroughRule: at least outShare of the received amount left within the
-// window after the first receipt, and the end balance is under endShare of the
-// received amount.
+// window after the first receipt, and the end balance is non-negative and under
+// endShare of the received amount. The end balance must be non-negative by rule:
+// a negative one (more left than came in — a net spender such as an exchange hot
+// wallet seen over a sub-window) is spending a pre-existing balance, not passing
+// the received funds through, so it never fires the flag. out_within_pct is a
+// share of what was received, so it is capped at 100 (early sends can exceed the
+// window's receipts when the balance is pre-existing).
 func passThroughRule(cps []counterparty, firstReceipt string, outShare, endShare float64) passThrough {
 	p := passThrough{Received: new(big.Int), Sent: new(big.Int), OutEarly: new(big.Int), FirstReceipt: firstReceipt}
 	for _, c := range cps {
@@ -236,7 +241,11 @@ func passThroughRule(cps []counterparty, firstReceipt string, outShare, endShare
 	rec, _ := new(big.Float).SetInt(p.Received).Float64()
 	early, _ := new(big.Float).SetInt(p.OutEarly).Float64()
 	end, _ := new(big.Float).SetInt(p.EndBalance).Float64()
-	p.OutEarlyPct = round(100*early/rec, 2)
-	p.Fires = early >= outShare*rec && end < endShare*rec
+	pct := 100 * early / rec
+	if pct > 100 {
+		pct = 100
+	}
+	p.OutEarlyPct = round(pct, 2)
+	p.Fires = early >= outShare*rec && end >= 0 && end < endShare*rec
 	return p
 }

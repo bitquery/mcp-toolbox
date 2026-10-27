@@ -125,6 +125,15 @@ func TestPassThrough(t *testing.T) {
 	if p := passThroughRule(cps, "", 0.9, 0.01); p.Fires {
 		t.Errorf("fired with a 10%% end balance")
 	}
+	// A net spender over a window (sent far exceeds received, a negative end
+	// balance): pass-through must NOT fire, and out_within_pct is capped at 100.
+	net := []counterparty{
+		{Dir: received, Raw: usdt(1552)},
+		{Dir: sent, Raw: usdt(6210), RawEarly: usdt(6210)},
+	}
+	if p := passThroughRule(net, "", 0.9, 0.01); p.Fires || p.OutEarlyPct != 100 || p.EndBalance.Sign() >= 0 {
+		t.Errorf("net-spender window: fired or pct not capped: %+v", p)
+	}
 }
 
 func TestFormatAndConvertUnits(t *testing.T) {
