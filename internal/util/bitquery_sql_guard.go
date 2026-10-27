@@ -87,6 +87,17 @@ var bitqueryForbiddenCall = regexp.MustCompile(
 // check strips). None of our tools set either.
 var bitqueryForbiddenSetting = regexp.MustCompile(`(?i)\b(additional_table_filters|additional_result_filter)\b`)
 
+// bitquerySettingsClause matches the SETTINGS keyword that opens a per-query
+// settings clause. It is used ONLY on a statement the caller wrote in full (see
+// BitqueryRefuseCallerSQL), never on a server-built one: the server's own tools
+// set SETTINGS and must keep working. ClickHouse parses SETTINGS as one
+// contiguous keyword token — a comment inside it breaks the token, and a quoted
+// identifier makes it a column name rather than the clause — so a word-boundary
+// match on the stripped text (string literals and comments already removed)
+// catches every real clause. A benign identifier such as my_settings or
+// settings_v2 keeps the SETTINGS inside a longer word, so \b does not fire.
+var bitquerySettingsClause = regexp.MustCompile(`(?i)\bsettings\b`)
+
 // BitqueryForbiddenTableFunction reports whether statement calls a forbidden
 // table function and returns the name as the caller wrote it (without the
 // parenthesis). It does not catch the setting vector or an escaped identifier;
@@ -117,6 +128,31 @@ func BitqueryRefuseSQL(statement string) *AgentError {
 	}
 	if m := bitqueryForbiddenSetting.FindStringSubmatch(stripped); m != nil {
 		return bitqueryRefuse("the setting " + m[1])
+	}
+	return nil
+}
+
+// BitqueryRefuseCallerSQL is BitqueryRefuseSQL plus a refusal of any SETTINGS
+// clause, for a statement whose whole text the CALLER wrote — the raw-SQL hatch
+// tools, whose request body is substituted entirely from the caller's SQL
+// parameter. Those sources run as a readonly=2 ClickHouse user, under which a
+// SETTINGS clause in the statement can raise, or with `= 0` REMOVE, the limits
+// the server relies on (max_execution_time, max_result_rows, max_memory_usage,
+// max_threads, …). Because `= 0` means "no limit", capping or allowlisting
+// values is a trap: the PRESENCE of the clause is refused, not a value. It is
+// called only where the whole statement is caller text, so it never sees — and
+// never refuses — the SETTINGS the server itself appends: the templated tools
+// carry their SETTINGS in server-authored SQL text, and the address_risk_report
+// engine builds and sends its own statements without going through a raw-SQL
+// hatch. BitqueryRefuseSQL stays the check every statement runs through at the
+// source, caller- and server-built alike, and carries no SETTINGS rule.
+func BitqueryRefuseCallerSQL(statement string) *AgentError {
+	if refusal := BitqueryRefuseSQL(statement); refusal != nil {
+		return refusal
+	}
+	stripped, _ := bitqueryStripSQL(statement)
+	if bitquerySettingsClause.MatchString(stripped) {
+		return bitqueryRefuse("a SETTINGS clause")
 	}
 	return nil
 }

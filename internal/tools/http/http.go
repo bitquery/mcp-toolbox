@@ -20,6 +20,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
@@ -123,7 +124,25 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		),
 		routes: routes,
 		labels: labels,
+		rawSQL: bitqueryIsRawSQLPassthrough(cfg.RequestBody),
 	}, nil
+}
+
+// bitqueryTemplateAction matches one Go-template action (`{{ ... }}`).
+var bitqueryTemplateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
+
+// bitqueryIsRawSQLPassthrough reports whether requestBody is made up only of
+// template actions and whitespace, so the populated body is ENTIRELY the
+// caller's text. These are the raw-SQL hatch tools (requestBody `{{.sql}}`): the
+// caller writes the whole statement, so every SETTINGS clause in the sent body
+// is the caller's and must be refused (see util.BitqueryRefuseCallerSQL). A body
+// that carries any server-authored SQL literal (every templated tool) is not a
+// passthrough, and the SETTINGS the server wrote there is left untouched.
+func bitqueryIsRawSQLPassthrough(requestBody string) bool {
+	if !strings.Contains(requestBody, "{{") {
+		return false
+	}
+	return strings.TrimSpace(bitqueryTemplateAction.ReplaceAllString(requestBody, "")) == ""
 }
 
 // validate interface
@@ -133,6 +152,9 @@ type Tool struct {
 	tools.BaseTool[Config]
 	routes *sourceRoutes
 	labels *bitqueryLabels
+	// rawSQL marks a raw-SQL hatch tool, whose request body is substituted
+	// entirely from the caller's SQL parameter (see bitqueryIsRawSQLPassthrough).
+	rawSQL bool
 }
 
 func (t Tool) GetSourceName() string {
@@ -315,6 +337,23 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	requestBody, err := getRequestBody(t.Cfg.BodyParams, t.Cfg.RequestBody, paramsMap)
 	if err != nil {
 		return nil, util.NewAgentError("error populating request body", err)
+	}
+
+	// Bitquery: on a raw-SQL hatch the populated body is the caller's whole
+	// statement. Refuse it before anything is built when it reaches outside the
+	// server or carries a SETTINGS clause (the readonly=2 user would let the
+	// caller raise or remove the server's per-query limits). The server's own
+	// SETTINGS are safe: a templated tool's body carries server-authored SQL, so
+	// it is not a passthrough and is not checked here. The log line names the
+	// construct only, never the statement.
+	if t.rawSQL {
+		if refusal := util.BitqueryRefuseCallerSQL(requestBody); refusal != nil {
+			if logger, lerr := util.LoggerFromContext(ctx); lerr == nil {
+				logger.WarnContext(ctx, "refused a caller statement that reaches outside the server or sets query settings",
+					"tool", t.Cfg.Name, "reason", refusal.Error())
+			}
+			return nil, refusal
+		}
 	}
 
 	// Calculate URL
