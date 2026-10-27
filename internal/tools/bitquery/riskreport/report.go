@@ -294,18 +294,23 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		r.view = "direct"
 	}
 	if r.chain == "" {
-		return r, agentErr("chain is required (tron or bitcoin)")
+		return r, agentErr("chain is required (tron, bitcoin or ethereum)")
 	}
 	if !slices.Contains(supportedChains, r.chain) {
-		return r, agentErr("chain %q is not supported; use tron or bitcoin", truncate(r.chain, 32))
-	}
-	if r.chain != "tron" && r.chain != "bitcoin" {
-		return r, agentErr("chain %s is not available yet in this report; use tron or bitcoin", r.chain)
+		return r, agentErr("chain %q is not supported; use tron, bitcoin or ethereum", truncate(r.chain, 32))
 	}
 	switch r.chain {
 	case "bitcoin":
 		if !bitcoinAddressRe.MatchString(r.address) {
 			return r, agentErr("address must be a Bitcoin address (1..., 3... or bc1...)")
+		}
+	case "ethereum":
+		// Ethereum addresses are hex and case-insensitive; the statements emit and
+		// the labels store lower-case 0x, so the target is lower-cased too, and a
+		// comparison or a labels lookup never turns on case.
+		r.address = strings.ToLower(r.address)
+		if !ethAddressRe.MatchString(r.address) {
+			return r, agentErr("address must be an Ethereum address (0x followed by 40 hex characters)")
 		}
 	default:
 		if !tronAddressRe.MatchString(r.address) {
@@ -318,10 +323,10 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if r.view != "direct" && r.view != "all" {
 		return r, agentErr("view must be direct or all")
 	}
-	// The multi-hop search is Tron-only for now; on bitcoin a request for view all
-	// (including the default) RUNS the direct view and the report says so, rather
-	// than refusing — a bare call must not fail.
-	if r.chain == "bitcoin" && r.view == "all" {
+	// The multi-hop search is Tron-only for now; on bitcoin and ethereum a request
+	// for view all (including the default) RUNS the direct view and the report says
+	// so, rather than refusing — a bare call must not fail.
+	if (r.chain == "bitcoin" || r.chain == "ethereum") && r.view == "all" {
 		r.view = "direct"
 		r.viewCoerced = true
 	}
@@ -337,13 +342,20 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	default:
 		return r, agentErr("format must be markdown or json")
 	}
-	if r.chain == "bitcoin" {
+	switch r.chain {
+	case "bitcoin":
 		// Bitcoin has one asset, BTC; accept "" or "BTC", refuse a token.
 		if as := strings.TrimSpace(str("asset")); as != "" && !strings.EqualFold(as, "BTC") {
 			return r, agentErr("on bitcoin the only asset is BTC; leave asset empty or set it to BTC")
 		}
 		r.asset, r.assetSet = tronAsset{}, false
-	} else {
+	case "ethereum":
+		a, set, err := parseEthAsset(str("asset"))
+		if err != nil {
+			return r, util.NewAgentError(err.Error(), nil)
+		}
+		r.asset, r.assetSet = a, set
+	default:
 		a, set, err := parseTronAsset(str("asset"))
 		if err != nil {
 			return r, util.NewAgentError(err.Error(), nil)
@@ -584,6 +596,8 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 	var err error
 	if req.chain == "bitcoin" {
 		assets, err = ex.assetsBitcoin(ctx, req.address, req.w, req.windowed)
+	} else if req.chain == "ethereum" {
+		assets, err = ex.assetsEth(ctx, req.address, req.w)
 	} else {
 		assets, err = ex.assets(ctx, req.address, req.w)
 	}
@@ -617,6 +631,10 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			if perr == nil && p > 0 {
 				priceAsOf = at
 			}
+		} else if req.chain == "ethereum" {
+			// The ETH range-keyed dictionary resolves at the pin, so the price is as
+			// of the pin, like Tron — no hour fallback.
+			p, perr = ex.priceEth(ctx, asset, req.w.Before)
 		} else {
 			p, perr = ex.price(ctx, asset, req.w.Before)
 		}
@@ -648,13 +666,38 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 		}
 	}
 
+	// Ethereum: the native-ETH dust bar that classifies an other-asset contact is
+	// a USD bar in ETH's 18 decimals, not the report asset's decimals, so on a
+	// token report it needs the ETH native price — one cheap keyed lookup
+	// (cityHash64('')). On a native-ETH report that price is the one already read.
+	// native_dust_units stays the no-price fallback (ETH is effectively always priced).
+	var nativeDustRaw *big.Int
+	if req.chain == "ethereum" {
+		ethPrice := price
+		if !asset.Native {
+			p, perr := ex.priceEth(ctx, ethNativeAsset(), req.w.Before)
+			if perr != nil {
+				if classifyLimit(ctx, perr) == stopLimit {
+					return nil, perr
+				}
+			} else if p > 0 {
+				ethPrice = p
+			}
+		}
+		if ethPrice > 0 {
+			nativeDustRaw = usdRaw(th.DustUSD, ethPrice, ethDecimals)
+		}
+	}
+
 	// 2. The 1-hop counterparties, in the report asset and in every other one.
 	var edges edgesResult
 	var other otherResult
 	cpIn := cpInput{Addr: req.address, Asset: asset, W: req.w, FirstIn: row.firstIn, MinRaw: minRaw, DustRaw: dustRaw,
-		NativeDust: th.NativeDustUnits, EarlyDays: th.PassThroughDays, Limit: th.CounterpartyLimit}
+		NativeDust: th.NativeDustUnits, NativeDustRaw: nativeDustRaw, EarlyDays: th.PassThroughDays, Limit: th.CounterpartyLimit}
 	if req.chain == "bitcoin" {
 		edges, other, err = ex.counterpartiesBitcoin(ctx, cpIn)
+	} else if req.chain == "ethereum" {
+		edges, other, err = ex.counterpartiesEth(ctx, cpIn)
 	} else {
 		edges, other, err = ex.counterparties(ctx, cpIn)
 	}
@@ -1147,6 +1190,9 @@ func (t Tool) direct(ctx context.Context, ex *executor, req request) (*reportOut
 			rep.Params.Complete = false
 			rep.Params.Notes = append(rep.Params.Notes, "this address has many transactions; only the largest were analysed for counterparties, and the rest are reported as a cut; the summary totals are its full lifetime totals")
 		}
+	}
+	if req.chain == "ethereum" && req.viewCoerced {
+		rep.Params.Notes = append(rep.Params.Notes, "multi-hop tracing is not available on ethereum yet; this is the direct view")
 	}
 
 	status := func(typ string) string {

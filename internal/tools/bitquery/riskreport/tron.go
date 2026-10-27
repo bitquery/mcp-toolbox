@@ -224,10 +224,15 @@ type cpInput struct {
 	MinRaw     *big.Int
 	DustRaw    *big.Int
 	NativeDust int64
-	EarlyDays  int
-	Limit      int
-	MaxRows    int64
-	MaxSecs    int
+	// NativeDustRaw is the native-dust bar as a raw amount, set on chains whose
+	// native unit count is meaningless (Ethereum: an 18-decimal wei bar from the
+	// ETH price). The Tron statement uses NativeDust (a unit count) and never
+	// reads this; the Ethereum statement prefers it and falls back to NativeDust.
+	NativeDustRaw *big.Int
+	EarlyDays     int
+	Limit         int
+	MaxRows       int64
+	MaxSecs       int
 }
 
 // confusables maps Cyrillic and Greek letters that look like Latin ones.

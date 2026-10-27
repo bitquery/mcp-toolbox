@@ -476,8 +476,11 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 // reverse): on Bitcoin that guard would return no labels at all.
 func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) (map[string][]labelRow, error) {
 	valid := tronAddressRe.MatchString
-	if chain == "bitcoin" {
+	switch chain {
+	case "bitcoin":
 		valid = bitcoinAddressRe.MatchString
+	case "ethereum":
+		valid = ethAddressRe.MatchString
 	}
 	seen := map[string]bool{}
 	var uniq []string

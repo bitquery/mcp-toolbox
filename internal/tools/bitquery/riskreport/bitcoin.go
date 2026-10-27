@@ -66,8 +66,12 @@ const btcCurrencyID = 375376
 // base58 address begins with 'T' (not a resemblance); Bitcoin has several
 // address forms with no single fixed prefix, so nothing is skipped there.
 func chainPrefixSkip(chain string) int {
-	if chain == "bitcoin" {
+	switch chain {
+	case "bitcoin":
 		return 0
+	case "ethereum":
+		// Every Ethereum address starts with the same "0x"; it is not a resemblance.
+		return ethPrefixSkip
 	}
 	return tronPrefixSkip
 }
