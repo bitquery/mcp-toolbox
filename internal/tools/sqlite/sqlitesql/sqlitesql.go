@@ -75,6 +75,18 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 		return nil, err
 	}
 
+	// Bitquery: the opt-in `format` parameter (rows/columnar). It is not added
+	// to Parameters or TemplateParameters, so it is never bound into the
+	// statement; Invoke consumes it locally. A tool that already declares its
+	// own `format` keeps it and columnar stays off.
+	formatColumnar := false
+	if !tools.HasFormatParam(allParameters) {
+		fp := tools.NewFormatParameter()
+		allParameters = append(allParameters, fp)
+		paramManifest = append(paramManifest, fp.Manifest())
+		formatColumnar = true
+	}
+
 	return Tool{
 		BaseTool: tools.NewBaseTool(
 			cfg,
@@ -82,6 +94,7 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
 			allParameters,
 		),
+		formatColumnar: formatColumnar,
 	}, nil
 }
 
@@ -90,6 +103,9 @@ var _ tools.Tool = Tool{}
 
 type Tool struct {
 	tools.BaseTool[Config]
+	// formatColumnar is true when this tool injected the opt-in `format`
+	// parameter, so Invoke may honour format=columnar (see bitquery_results.go).
+	formatColumnar bool
 }
 
 func (t Tool) GetSourceName() string {
@@ -126,6 +142,16 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	resp, err := source.RunSQL(ctx, newStatement, newParams.AsSlice())
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
+	}
+	// Bitquery: format=columnar returns the rows as one columnar block instead
+	// of one text item per row. The default (rows) and anything Columnar cannot
+	// reshape fall through unchanged.
+	if t.formatColumnar && tools.WantColumnar(paramsMap) {
+		if rows, ok := resp.([]any); ok {
+			if tr, ok := tools.Columnar(rows); ok {
+				return tr, nil
+			}
+		}
 	}
 	return resp, nil
 }

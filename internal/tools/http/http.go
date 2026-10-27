@@ -107,6 +107,17 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		return nil, err
 	}
 
+	// Bitquery: the opt-in `format` parameter (rows/columnar). It is injected
+	// after routes and labels are validated against the cfg parameters, and is
+	// NOT added to QueryParams/BodyParams, so getURL and getRequestBody never
+	// forward it to the database; Invoke consumes it locally. A tool that
+	// already declares its own `format` keeps it and columnar stays off.
+	formatColumnar := false
+	if !tools.HasFormatParam(allParameters) {
+		allParameters = append(allParameters, tools.NewFormatParameter())
+		formatColumnar = true
+	}
+
 	// Create Toolbox manifest
 	paramManifest := allParameters.Manifest()
 
@@ -122,9 +133,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
 			allParameters,
 		),
-		routes: routes,
-		labels: labels,
-		rawSQL: bitqueryIsRawSQLPassthrough(cfg.RequestBody),
+		routes:         routes,
+		labels:         labels,
+		rawSQL:         bitqueryIsRawSQLPassthrough(cfg.RequestBody),
+		formatColumnar: formatColumnar,
 	}, nil
 }
 
@@ -155,6 +167,9 @@ type Tool struct {
 	// rawSQL marks a raw-SQL hatch tool, whose request body is substituted
 	// entirely from the caller's SQL parameter (see bitqueryIsRawSQLPassthrough).
 	rawSQL bool
+	// formatColumnar is true when this tool injected the opt-in `format`
+	// parameter, so Invoke may honour format=columnar (see bitquery_results.go).
+	formatColumnar bool
 }
 
 func (t Tool) GetSourceName() string {
@@ -406,6 +421,16 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	// its result; a failed lookup leaves the data as it is.
 	if t.labels != nil {
 		resp = t.labels.enrich(ctx, resp, paramsMap)
+	}
+	// Bitquery: format=columnar returns the rows as one columnar block instead
+	// of one text item per row. The default (rows) and anything Columnar cannot
+	// reshape fall through unchanged.
+	if t.formatColumnar && tools.WantColumnar(paramsMap) {
+		if rows, ok := resp.([]any); ok {
+			if tr, ok := tools.Columnar(rows); ok {
+				return tr, nil
+			}
+		}
 	}
 	return resp, nil
 }
