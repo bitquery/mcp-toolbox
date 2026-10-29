@@ -581,6 +581,10 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		})
 	}
 
+	// Bitquery: the public MCP server card (bitquery_server_card.go) — before the /mcp
+	// mount, so /mcp/server-card is not taken for a toolset name
+	registerBitqueryServerCard(ctx, r, s, mcpAuthEnabled)
+
 	// control plane
 	mcpR, err := mcpRouter(s)
 	if err != nil {
