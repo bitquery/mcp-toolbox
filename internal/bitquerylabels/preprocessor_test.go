@@ -141,6 +141,23 @@ func TestPreprocessCustomParamNames(t *testing.T) {
 	}
 }
 
+// A list longer than maxAddresses sends only the first maxAddresses, in order.
+func TestPreprocessCapsAddresses(t *testing.T) {
+	client := &recordingClient{}
+	p := NewPreprocessor(client, nil, "")
+	p.maxAddresses = 2
+	p.Preprocess(context.Background(), map[string]any{
+		"addresses": evmAddr + "," + tronAddr + "," + evmAddr2,
+	})
+	want := []Request{
+		{Addresses: []string{evmAddr}, Chains: supportedEvmSlugs},
+		{Addresses: []string{tronAddr}, Chain: "tron"},
+	}
+	if diff := cmp.Diff(want, client.requests); diff != "" {
+		t.Fatalf("mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestPreprocessNilSafe(t *testing.T) {
 	var p *Preprocessor
 	p.Preprocess(context.Background(), map[string]any{"address": evmAddr})
@@ -160,7 +177,16 @@ func TestNewDisabled(t *testing.T) {
 	if diff := cmp.Diff([]string{"a"}, p.addressParams); diff != "" || p.chainParam != "c" {
 		t.Errorf("params not applied: %v %q", p.addressParams, p.chainParam)
 	}
-	if _, err := New(context.Background(), "src", &Config{Host: "h:1", SrvTtlSec: -1}); err == nil {
-		t.Errorf("an invalid enabled config must be rejected")
+	if p.maxAddresses != defaultMaxAddresses {
+		t.Errorf("maxAddresses = %d, want default %d", p.maxAddresses, defaultMaxAddresses)
+	}
+	p, err = New(context.Background(), "src", &Config{Host: "h:1", MaxAddresses: 25})
+	if err != nil || p.maxAddresses != 25 {
+		t.Errorf("New(maxAddresses 25) = %v, %v; want maxAddresses 25", p, err)
+	}
+	for _, cfg := range []*Config{{Host: "h:1", SrvTtlSec: -1}, {Host: "h:1", MaxAddresses: -1}} {
+		if _, err := New(context.Background(), "src", cfg); err == nil {
+			t.Errorf("an invalid enabled config must be rejected: %+v", cfg)
+		}
 	}
 }
