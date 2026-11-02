@@ -46,8 +46,12 @@ import (
 const (
 	defaultTimeoutSec = 5.0
 	defaultSrvTtlSec  = 60
-	labelsPath        = "/labels"
-	userAgent         = "mcp-toolbox"
+	// defaultMaxAddresses is how many addresses one tool call sends to the
+	// service (BIT-16203: "1 or several, up to 100"). Every address still gets
+	// the labels ClickHouse already holds.
+	defaultMaxAddresses = 100
+	labelsPath          = "/labels"
+	userAgent           = "mcp-toolbox"
 )
 
 // Config is the `bitqueryLabelsQueryService` block of a clickhouse source. Both
@@ -73,6 +77,10 @@ type Config struct {
 	AddressParams []string `yaml:"addressParams"`
 	// ChainParam names the tool parameter that carries the chain. Default: chain.
 	ChainParam string `yaml:"chainParam"`
+	// MaxAddresses caps the addresses one tool call sends to the service; the
+	// rest are counted as skipped and read from ClickHouse as they are.
+	// Default 100.
+	MaxAddresses int `yaml:"maxAddresses"`
 }
 
 // Enabled reports whether the block names a service to call.
@@ -135,8 +143,8 @@ func NewService(cfg Config) (*Service, error) {
 	if !cfg.Enabled() {
 		return nil, fmt.Errorf("labels-query-service requires either `service` (SRV name) or `host`")
 	}
-	if cfg.TimeoutSec < 0 || cfg.SrvTtlSec < 0 {
-		return nil, fmt.Errorf("labels-query-service timeoutSec and srvTtlSec must not be negative")
+	if cfg.TimeoutSec < 0 || cfg.SrvTtlSec < 0 || cfg.MaxAddresses < 0 {
+		return nil, fmt.Errorf("labels-query-service timeoutSec, srvTtlSec and maxAddresses must not be negative")
 	}
 	timeoutSec := cfg.TimeoutSec
 	if timeoutSec == 0 {
@@ -193,10 +201,7 @@ func (s *Service) Refresh(ctx context.Context, req Request) {
 		result = "failure"
 	}
 
-	userID := "0"
-	if id, ok := util.BitqueryIdentityFromContext(ctx); ok && id.UserID != "" {
-		userID = id.UserID
-	}
+	userID := userIDFrom(ctx)
 	m := getInstruments()
 	userAttrs := metric.WithAttributes(attribute.String("user_id", userID), attribute.String("result", result))
 	m.requests.Add(ctx, 1, userAttrs)
@@ -393,6 +398,15 @@ func truncateForLog(b []byte) string {
 	return fmt.Sprintf("%s...(%d bytes total)", b[:maxLogBodyBytes], len(b))
 }
 
+// userIDFrom is the metric user_id of the caller, "0" for a call with no
+// Bitquery identity.
+func userIDFrom(ctx context.Context) string {
+	if id, ok := util.BitqueryIdentityFromContext(ctx); ok && id.UserID != "" {
+		return id.UserID
+	}
+	return "0"
+}
+
 func loggerFrom(ctx context.Context) log.Logger {
 	logger, err := util.LoggerFromContext(ctx)
 	if err != nil {
@@ -409,6 +423,7 @@ type instruments struct {
 	requests  metric.Int64Counter
 	addresses metric.Int64Counter
 	updated   metric.Int64Counter
+	skipped   metric.Int64Counter
 	duration  metric.Float64Histogram
 }
 
@@ -437,6 +452,11 @@ func getInstruments() *instruments {
 			metric.WithDescription("Addresses the labels-query-service reported as updated, by user."),
 			metric.WithUnit("{address}")); err != nil {
 			inst.updated, _ = fallback.Int64Counter("")
+		}
+		if inst.skipped, err = meter.Int64Counter("toolbox.bitquery.labels_query_service.skipped_addresses",
+			metric.WithDescription("Addresses over maxAddresses in one tool call, not sent to the labels-query-service, by user."),
+			metric.WithUnit("{address}")); err != nil {
+			inst.skipped, _ = fallback.Int64Counter("")
 		}
 		if inst.duration, err = meter.Float64Histogram("toolbox.bitquery.labels_query_service.request.duration",
 			metric.WithDescription("Duration of labels-query-service calls, including SRV resolution."),

@@ -20,6 +20,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // HookSource is implemented by a source that may carry the labels pre-process
@@ -86,6 +89,8 @@ type Preprocessor struct {
 	// timeout bounds one tool call: every lookup it makes. 0 = no bound beyond
 	// what the client sets per lookup.
 	timeout time.Duration
+	// maxAddresses caps the addresses one tool call sends; the rest are skipped.
+	maxAddresses int
 }
 
 // NewPreprocessor builds a hook around a client. Empty addressParams/chainParam
@@ -98,7 +103,8 @@ func NewPreprocessor(client Client, addressParams []string, chainParam string) *
 	if strings.TrimSpace(chainParam) == "" {
 		chainParam = defaultChainParam
 	}
-	p := &Preprocessor{client: client, addressParams: addressParams, chainParam: chainParam}
+	p := &Preprocessor{client: client, addressParams: addressParams, chainParam: chainParam,
+		maxAddresses: defaultMaxAddresses}
 	if svc, ok := client.(*Service); ok && svc != nil {
 		p.timeout = svc.timeout
 	}
@@ -121,10 +127,13 @@ func New(ctx context.Context, sourceName string, cfg *Config) (*Preprocessor, er
 		return nil, fmt.Errorf("source %q: %w", sourceName, err)
 	}
 	p := NewPreprocessor(svc, cfg.AddressParams, cfg.ChainParam)
+	if cfg.MaxAddresses > 0 {
+		p.maxAddresses = cfg.MaxAddresses
+	}
 	if logger != nil {
 		logger.InfoContext(ctx, fmt.Sprintf("source %q: labels-query-service pre-process hook enabled", sourceName),
 			"service", svc.service, "host", svc.host, "timeout", svc.timeout.String(),
-			"addressParams", p.addressParams, "chainParam", p.chainParam)
+			"addressParams", p.addressParams, "chainParam", p.chainParam, "maxAddresses", p.maxAddresses)
 	}
 	return p, nil
 }
@@ -144,6 +153,16 @@ func (p *Preprocessor) Preprocess(ctx context.Context, params map[string]any) {
 	addresses := p.addresses(params)
 	if len(addresses) == 0 {
 		return
+	}
+	if p.maxAddresses > 0 && len(addresses) > p.maxAddresses {
+		skipped := len(addresses) - p.maxAddresses
+		addresses = addresses[:p.maxAddresses]
+		getInstruments().skipped.Add(ctx, int64(skipped),
+			metric.WithAttributes(attribute.String("user_id", userIDFrom(ctx))))
+		if logger := loggerFrom(ctx); logger != nil {
+			logger.DebugContext(ctx, "labels preprocessor: over maxAddresses, the rest are read from ClickHouse as they are",
+				"maxAddresses", p.maxAddresses, "skipped", skipped)
+		}
 	}
 
 	var chainFilters []string
