@@ -473,13 +473,13 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 			}
 		}
 		if err != nil {
-			// Bitquery: a guard a tool raised on the caller's arguments carries the
-			// guard author's message, and on a raw-SQL hatch that message is text
-			// the CALLER wrote. A metric attribute keeps one series per distinct
-			// value for the whole retention, so a refusal records the KIND of
-			// failure instead — the same name the operation metric derives from
-			// this JSON-RPC code. Every other error keeps the text it had.
-			errorType := err.Error()
+			// Bitquery: a metric attribute keeps one series per distinct value for
+			// the whole retention, and a database error quotes the CALLER's
+			// statement, so the label records the KIND of failure, never the text
+			// (util.BitqueryMetricErrorType). A guard a tool raised on the caller's
+			// arguments is labelled with the name the operation metric derives from
+			// this JSON-RPC code.
+			errorType := util.BitqueryMetricErrorType(err)
 			if _, refused := util.BitqueryInvalidParamsRefusal(err); refused {
 				errorType = jsonrpc.Error{Code: jsonrpc.INVALID_PARAMS}.String()
 			}

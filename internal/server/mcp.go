@@ -236,7 +236,7 @@ func (s *stdioSession) readInputStream(ctx context.Context) error {
 		durationAttrs := make([]attribute.KeyValue, len(fullAttrs))
 		copy(durationAttrs, fullAttrs)
 		if err != nil && err != io.EOF {
-			durationAttrs = append(durationAttrs, attribute.String("error.type", err.Error()))
+			durationAttrs = append(durationAttrs, attribute.String("error.type", util.BitqueryMetricErrorType(err)))
 		}
 		s.server.instrumentation.McpSessionDuration.Record(ctx, sessionDuration, metric.WithAttributes(durationAttrs...))
 	}()
@@ -434,7 +434,7 @@ func sseHandler(s *Server, w http.ResponseWriter, r *http.Request) {
 		copy(durationAttrs, sessionAttrs)
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())
-			durationAttrs = append(durationAttrs, attribute.String("error.type", err.Error()))
+			durationAttrs = append(durationAttrs, attribute.String("error.type", util.BitqueryMetricErrorType(err)))
 		}
 		s.instrumentation.McpSessionDuration.Record(ctx, sessionDuration, metric.WithAttributes(durationAttrs...))
 		span.End()
