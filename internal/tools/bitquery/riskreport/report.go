@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/tools/bitquery/chainexec"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
 
@@ -185,19 +186,13 @@ type flagOut struct {
 	EvidenceTxs []string       `json:"evidence_txs"`
 }
 
-type statementCost struct {
-	Name      string `json:"name"`
-	RowsRead  int64  `json:"rows_read"`
-	BytesRead int64  `json:"bytes_read"`
-	ElapsedMS int64  `json:"elapsed_ms"`
-}
-
-type costOut struct {
-	Statements int             `json:"statements"`
-	RowsRead   int64           `json:"rows_read"`
-	BytesRead  int64           `json:"bytes_read"`
-	Detail     []statementCost `json:"detail"`
-}
+// statementCost and costOut are the statement runner's cost types (package
+// chainexec); these aliases keep this file's and the report's references unchanged
+// after the runner was lifted out, so the report JSON is byte-identical.
+type (
+	statementCost = chainexec.StatementCost
+	costOut       = chainexec.CostOut
+)
 
 type cutOut struct {
 	Reason       string `json:"reason"`
@@ -540,7 +535,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(t.m.th.DeadlineSeconds)*time.Second)
 	defer cancel()
 
-	ex := &executor{src: src, labels: t.labels, th: t.m.th}
+	ex := newExecutor(src, t.labels, t.m.th)
 	rep, err := t.direct(ctx, ex, req)
 	if err != nil {
 		// An honest refusal (e.g. a window too large to total) is already a
@@ -551,7 +546,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		}
 		return nil, util.ProcessGeneralError(err)
 	}
-	rep.Cost = ex.cost
+	rep.Cost = ex.Cost
 	rep.TimingMS = time.Since(start).Milliseconds()
 	// format json returns the report as the single JSON document. format markdown
 	// (the default) returns ONLY the concise human report as text — small enough

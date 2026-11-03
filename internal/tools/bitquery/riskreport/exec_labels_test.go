@@ -55,7 +55,7 @@ func newHookExecutor() (*executor, *refreshClient, *[]string) {
 	events := &[]string{}
 	client := &refreshClient{events: events}
 	labels := &hookLabels{pre: bitquerylabels.NewPreprocessor(client, nil, ""), events: events}
-	ex := &executor{src: &fakeChain{}, labels: labels, th: withDefaults(Thresholds{})}
+	ex := newExecutor(&fakeChain{}, labels, withDefaults(Thresholds{}))
 	return ex, client, events
 }
 
@@ -88,13 +88,13 @@ func TestLabelRowsRefreshesBeforeRead(t *testing.T) {
 		t.Errorf("events = %s, want [refresh select]", got)
 	}
 	found := false
-	for _, d := range ex.cost.Detail {
+	for _, d := range ex.Cost.Detail {
 		if d.Name == "labels_refresh" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("cost.Detail = %+v, want a labels_refresh entry", ex.cost.Detail)
+		t.Errorf("cost.Detail = %+v, want a labels_refresh entry", ex.Cost.Detail)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestLabelRowsRefreshSkippedNearDeadline(t *testing.T) {
 // A labels source without the hook reads as before.
 func TestLabelRowsWithoutHook(t *testing.T) {
 	labels := &fakeLabels{}
-	ex := &executor{src: &fakeChain{}, labels: labels, th: withDefaults(Thresholds{})}
+	ex := newExecutor(&fakeChain{}, labels, withDefaults(Thresholds{}))
 	if _, err := ex.labelRows(context.Background(), "tron", tronAddrs(2)); err != nil {
 		t.Fatalf("labelRows: %v", err)
 	}

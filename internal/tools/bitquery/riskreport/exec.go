@@ -23,27 +23,21 @@ package riskreport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/googleapis/mcp-toolbox/internal/bitquerylabels"
-	"github.com/googleapis/mcp-toolbox/internal/util"
+	"github.com/googleapis/mcp-toolbox/internal/tools/bitquery/chainexec"
 )
 
 type executor struct {
-	src    httpSource
-	labels sqlSource
+	*chainexec.Exec
 	th     Thresholds
-	cost   costOut
-	// last is how long the last statement of each kind took.
-	last map[string]time.Duration
+	labels sqlSource
 	// refreshLeft is how many more addresses this report may send to the
 	// labels-query-service; refreshSet says it was read from the hook.
 	refreshLeft int
@@ -53,190 +47,43 @@ type executor struct {
 	btc *btcState
 }
 
-// errNoTime stops a statement the report's deadline leaves no time for.
-var errNoTime = fmt.Errorf("the report's deadline is too close to start another statement")
-
-// minStartSeconds is the least time left in which a statement is started.
-const minStartSeconds = 5
-
-// secs is a statement's max_execution_time: statement_max_seconds, or the
-// whole seconds left before the report's deadline when fewer, at least 1.
-func (e *executor) secs(ctx context.Context) int {
-	s := e.th.StatementMaxSeconds
-	if dl, ok := ctx.Deadline(); ok {
-		s = min(s, int(time.Until(dl)/time.Second))
+// newExecutor builds an executor: the shared runner (package chainexec) carries the
+// chain source and the per-statement / per-report budget knobs from the thresholds;
+// the labels source and the chain-specific state stay on the executor.
+func newExecutor(src httpSource, labels sqlSource, th Thresholds) *executor {
+	return &executor{
+		Exec: &chainexec.Exec{
+			Src:                 src,
+			StatementMaxSeconds: th.StatementMaxSeconds,
+			StatementMaxRows:    th.StatementMaxRows,
+			ReportRowsBudget:    th.ReportRowsBudget,
+		},
+		th:     th,
+		labels: labels,
 	}
-	return max(1, s)
 }
 
-// mayStart refuses a statement when the time left before the report's deadline
-// is under the larger of 5 seconds and the last statement of the same kind.
-func (e *executor) mayStart(ctx context.Context, kind string) error {
-	dl, ok := ctx.Deadline()
-	if !ok {
-		return nil
-	}
-	need := max(minStartSeconds*time.Second, e.last[kind])
-	if time.Until(dl) < need {
-		return errNoTime
-	}
-	return nil
-}
+// The statement runner lives in package chainexec; executor embeds *chainexec.Exec,
+// which promotes Query / Secs / MayStart / Took / MaxRows and the Cost ledger. These
+// aliases and lowercase forwarders keep the risk-report code and its tests calling
+// the same names they did before the lift, so the report stays byte-identical.
+var (
+	errNoTime = chainexec.ErrNoTime
+	errBudget = chainexec.ErrBudget
+	asInt     = chainexec.AsInt
+	asStr     = chainexec.AsStr
+	asBig     = chainexec.AsBig
+	asStrings = chainexec.AsStrings
+)
 
-func (e *executor) took(kind string, d time.Duration) {
-	if e.last == nil {
-		e.last = map[string]time.Duration{}
-	}
-	e.last[kind] = d
-}
+const minStartSeconds = chainexec.MinStartSeconds
 
-// errBudget stops a report whose statements have read its row budget.
-var errBudget = fmt.Errorf("the report reached its row budget before it was complete; narrow it with after_time / before_time or a single asset")
-
-func (e *executor) maxRows() (int64, error) {
-	left := e.th.ReportRowsBudget - e.cost.RowsRead
-	if left <= 0 {
-		return 0, errBudget
-	}
-	return min(left, e.th.StatementMaxRows), nil
-}
-
-// query posts one statement to the chain source and returns its rows. header
-// is the table the statement reads, as the X-Bitquery-Table header names it.
+func (e *executor) secs(ctx context.Context) int                    { return e.Secs(ctx) }
+func (e *executor) mayStart(ctx context.Context, kind string) error { return e.MayStart(ctx, kind) }
+func (e *executor) took(kind string, d time.Duration)               { e.Took(kind, d) }
+func (e *executor) maxRows() (int64, error)                         { return e.MaxRows() }
 func (e *executor) query(ctx context.Context, name, header, statement string) ([]map[string]any, error) {
-	if err := e.mayStart(ctx, name); err != nil {
-		return nil, err
-	}
-	start := time.Now()
-	u, err := url.Parse(strings.TrimRight(e.src.HttpBaseURL(), "/") + "/")
-	if err != nil {
-		return nil, fmt.Errorf("error building the request URL: %w", err)
-	}
-	q := u.Query()
-	for k, v := range e.src.HttpQueryParams() {
-		q.Set(k, v)
-	}
-	// Bitquery: each statement carries its own billing query_id, built from the
-	// caller identity, as the http tool does for its one statement.
-	var qid string
-	var stamp bool
-	if paths := e.src.BitqueryLegacyBillingPaths(); paths != "" {
-		qid, stamp = util.BitqueryLegacyClickhouseQueryID(ctx, paths)
-	} else {
-		qid, stamp = util.BitqueryClickhouseQueryID(ctx)
-	}
-	if stamp {
-		q.Set("query_id", qid)
-	}
-	// A statement answers FORMAT JSON, one document: with the answer held to
-	// the end of the query, a limit or a timeout that fires after the first
-	// block is an HTTP error (classified as a limit), not a body cut short.
-	// Set here, whatever the source's own parameters say.
-	q.Set("wait_end_of_query", "1")
-	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(statement))
-	if err != nil {
-		return nil, fmt.Errorf("error creating the request: %w", err)
-	}
-	for k, v := range e.src.HttpDefaultHeaders() {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("X-Bitquery-Table", header)
-	resp, err := e.src.RunRequest(ctx, req)
-	e.took(name, time.Since(start))
-	if err != nil {
-		// A refused or failed statement is listed too: it was sent, and may
-		// have read before it stopped.
-		e.cost.Statements++
-		e.cost.Detail = append(e.cost.Detail, statementCost{Name: name + " (failed)", ElapsedMS: time.Since(start).Milliseconds()})
-		return nil, err
-	}
-	doc, ok := resp.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected answer to the %s statement", name)
-	}
-	sc := statementCost{Name: name, ElapsedMS: time.Since(start).Milliseconds()}
-	if st, ok := doc["statistics"].(map[string]any); ok {
-		sc.RowsRead = asInt(st["rows_read"])
-		sc.BytesRead = asInt(st["bytes_read"])
-	}
-	e.cost.Statements++
-	e.cost.RowsRead += sc.RowsRead
-	e.cost.BytesRead += sc.BytesRead
-	e.cost.Detail = append(e.cost.Detail, sc)
-	data, _ := doc["data"].([]any)
-	rows := make([]map[string]any, 0, len(data))
-	for _, d := range data {
-		if r, ok := d.(map[string]any); ok {
-			rows = append(rows, r)
-		}
-	}
-	return rows, nil
-}
-
-func asInt(v any) int64 {
-	switch n := v.(type) {
-	case float64:
-		return int64(n)
-	case int64:
-		return n
-	case uint64:
-		return int64(n)
-	case int:
-		return int64(n)
-	case uint32:
-		return int64(n)
-	case int32:
-		return int64(n)
-	case uint8:
-		return int64(n)
-	case json.Number:
-		i, _ := n.Int64()
-		return i
-	case string:
-		i, _ := strconv.ParseInt(n, 10, 64)
-		return i
-	}
-	return 0
-}
-
-func asStr(v any) string {
-	switch s := v.(type) {
-	case string:
-		return s
-	case nil:
-		return ""
-	case []byte:
-		return string(s)
-	}
-	return fmt.Sprint(v)
-}
-
-func asBig(v any) *big.Int {
-	s := strings.TrimSpace(asStr(v))
-	if s == "" {
-		return new(big.Int)
-	}
-	b, ok := new(big.Int).SetString(s, 10)
-	if !ok {
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			b, _ = big.NewFloat(f).Int(nil)
-			return b
-		}
-		return new(big.Int)
-	}
-	return b
-}
-
-func asStrings(v any) []string {
-	arr, _ := v.([]any)
-	out := make([]string, 0, len(arr))
-	for _, x := range arr {
-		if s := asStr(x); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	return e.Query(ctx, name, header, statement)
 }
 
 func dirOf(v any) direction {
@@ -511,7 +358,7 @@ func (e *executor) refreshLabels(ctx context.Context, chain string, addrs []stri
 	start := time.Now()
 	sent := pre.Refresh(ctx, addrs, []string{chain}, e.refreshLeft)
 	e.took("labels_refresh", time.Since(start))
-	e.cost.Detail = append(e.cost.Detail, statementCost{Name: "labels_refresh", ElapsedMS: time.Since(start).Milliseconds()})
+	e.Cost.Detail = append(e.Cost.Detail, statementCost{Name: "labels_refresh", ElapsedMS: time.Since(start).Milliseconds()})
 	e.refreshLeft -= sent
 }
 
@@ -548,13 +395,13 @@ func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) 
 		if err != nil {
 			return nil, err
 		}
-		e.cost.Statements++
+		e.Cost.Statements++
 		// A real read of the labels table underlies this, but its rows_read /
 		// bytes_read stay 0: the labels source returns result rows only (through
 		// database/sql), not the statistics block the http chain source exposes,
 		// so the scan stats are dropped at the source boundary and cannot be
 		// captured here without the source surfacing them.
-		e.cost.Detail = append(e.cost.Detail, statementCost{Name: "labels", ElapsedMS: time.Since(start).Milliseconds()})
+		e.Cost.Detail = append(e.Cost.Detail, statementCost{Name: "labels", ElapsedMS: time.Since(start).Milliseconds()})
 		rows, _ := res.([]any)
 		for _, x := range rows {
 			r, ok := x.(map[string]any)

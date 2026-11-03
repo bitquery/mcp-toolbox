@@ -790,7 +790,7 @@ func countContaining(stmts []string, sub string) int {
 // most 7, and it carries the settings that stop it with the report.
 func TestStatementTimeFollowsDeadline(t *testing.T) {
 	chain := &fakeChain{assets: []map[string]any{usdtAssetRow("1", "0", 1, 0)}}
-	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	ex := newExecutor(chain, nil, withDefaults(Thresholds{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 7500*time.Millisecond)
 	defer cancel()
 	if _, err := ex.assets(ctx, plainSender, window{}); err != nil {
@@ -813,7 +813,7 @@ func TestStatementTimeFollowsDeadline(t *testing.T) {
 // kind): a level whose previous read took 30 s is not started with 20 s left.
 func TestNoStatementWithoutTime(t *testing.T) {
 	chain := &fakeChain{}
-	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	ex := newExecutor(chain, nil, withDefaults(Thresholds{}))
 	asset := tronAsset{Key: usdtContract, Contract: usdtContract, Decimals: 6}
 	read := func(left time.Duration) error {
 		ctx, cancel := context.WithTimeout(context.Background(), left)
@@ -913,14 +913,14 @@ func TestLiveSentSideNotCutAsBudget(t *testing.T) {
 // stopped says which statement stopped it.
 func TestRefusedStatementIsListed(t *testing.T) {
 	chain := &fakeChain{readCost: map[string]int64{plainSender: 10_000_000}}
-	ex := &executor{src: chain, th: withDefaults(Thresholds{})}
+	ex := newExecutor(chain, nil, withDefaults(Thresholds{}))
 	asset := tronAsset{Key: usdtContract, Contract: usdtContract, Decimals: 6}
 	_, over, err := ex.readSet(context.Background(), receiptsSide, []string{plainSender}, []uint32{unbounded}, asset, time.Time{})
 	if err != nil || !over {
 		t.Fatalf("over = %v, err = %v; want a refusal for size", over, err)
 	}
-	if ex.cost.Statements != 1 || len(ex.cost.Detail) != 1 || ex.cost.Detail[0].Name != "history_receipts (failed)" {
-		t.Errorf("cost: %+v", ex.cost)
+	if ex.Cost.Statements != 1 || len(ex.Cost.Detail) != 1 || ex.Cost.Detail[0].Name != "history_receipts (failed)" {
+		t.Errorf("cost: %+v", ex.Cost)
 	}
 }
 
@@ -1181,7 +1181,7 @@ func TestWindowIsPinnedForEveryStatement(t *testing.T) {
 
 	// The fake does tell an unpinned counterparty statement: it counts the
 	// late transfer.
-	ex := &executor{src: g.chain, th: withDefaults(Thresholds{})}
+	ex := newExecutor(g.chain, nil, withDefaults(Thresholds{}))
 	edges, _, cerr := ex.counterparties(context.Background(), cpInput{Addr: g.target, Asset: tronAsset{Key: usdtContract, Contract: usdtContract, Symbol: "USDT", Decimals: 6},
 		MinRaw: new(big.Int), DustRaw: new(big.Int), Limit: 10})
 	if cerr != nil {
