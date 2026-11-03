@@ -150,29 +150,52 @@ func (p *Preprocessor) Preprocess(ctx context.Context, params map[string]any) {
 	if p == nil || p.client == nil {
 		return
 	}
-	addresses := p.addresses(params)
-	if len(addresses) == 0 {
-		return
-	}
-	if p.maxAddresses > 0 && len(addresses) > p.maxAddresses {
-		skipped := len(addresses) - p.maxAddresses
-		addresses = addresses[:p.maxAddresses]
-		getInstruments().skipped.Add(ctx, int64(skipped),
-			metric.WithAttributes(attribute.String("user_id", userIDFrom(ctx))))
-		if logger := loggerFrom(ctx); logger != nil {
-			logger.DebugContext(ctx, "labels preprocessor: over maxAddresses, the rest are read from ClickHouse as they are",
-				"maxAddresses", p.maxAddresses, "skipped", skipped)
-		}
-	}
-
 	var chainFilters []string
 	if chain, ok := params[p.chainParam].(string); ok {
 		chainFilters = []string{chain}
 	}
-	requests := buildLabelsRequests(addresses, chainFilters)
+	p.Refresh(ctx, p.addresses(params), chainFilters, 0)
+}
+
+// MaxAddresses is the cap on the addresses one call sends to the service, 0
+// for no cap. It is safe on a nil receiver.
+func (p *Preprocessor) MaxAddresses() int {
+	if p == nil {
+		return 0
+	}
+	return p.maxAddresses
+}
+
+// Refresh sends addresses to the service, the first limit of them (0: the
+// preprocessor's maxAddresses; the smaller of the two otherwise), and returns
+// how many it sent. A caller that holds addresses of its own (a tool that
+// meets them in a result rather than in its parameters) calls this instead
+// of Preprocess. chains are the caller's chain filters, as Preprocess reads
+// them from the chain parameter; empty means each address goes to the chains
+// its format allows. The addresses over the limit are counted as skipped and
+// are read from ClickHouse as they are. Safe on a nil receiver, never fails.
+func (p *Preprocessor) Refresh(ctx context.Context, addresses []string, chains []string, limit int) int {
+	if p == nil || p.client == nil || len(addresses) == 0 {
+		return 0
+	}
+	if p.maxAddresses > 0 && (limit <= 0 || limit > p.maxAddresses) {
+		limit = p.maxAddresses
+	}
+	if limit > 0 && len(addresses) > limit {
+		skipped := len(addresses) - limit
+		addresses = addresses[:limit]
+		getInstruments().skipped.Add(ctx, int64(skipped),
+			metric.WithAttributes(attribute.String("user_id", userIDFrom(ctx))))
+		if logger := loggerFrom(ctx); logger != nil {
+			logger.DebugContext(ctx, "labels preprocessor: over the address limit, the rest are read from ClickHouse as they are",
+				"limit", limit, "skipped", skipped)
+		}
+	}
+
+	requests := buildLabelsRequests(addresses, chains)
 	if logger := loggerFrom(ctx); logger != nil {
 		logger.DebugContext(ctx, "labels preprocessor: refreshing addresses before ClickHouse read",
-			"addresses", len(addresses), "chainFilters", chainFilters, "requests", len(requests))
+			"addresses", len(addresses), "chainFilters", chains, "requests", len(requests))
 	}
 	if p.timeout > 0 {
 		var cancel context.CancelFunc
@@ -185,10 +208,11 @@ func (p *Preprocessor) Preprocess(ctx context.Context, params map[string]any) {
 				logger.WarnContext(ctx, "labels-query-service: no time left in the call, remaining lookups skipped",
 					"skipped", len(requests)-i, "requests", len(requests), "timeout", p.timeout.String(), "err", ctx.Err().Error())
 			}
-			return
+			return len(addresses)
 		}
 		p.client.Refresh(ctx, req)
 	}
+	return len(addresses)
 }
 
 // addresses collects the addresses from the configured parameters: split on

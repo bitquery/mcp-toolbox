@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/googleapis/mcp-toolbox/internal/bitquerylabels"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 )
 
@@ -43,6 +44,10 @@ type executor struct {
 	cost   costOut
 	// last is how long the last statement of each kind took.
 	last map[string]time.Duration
+	// refreshLeft is how many more addresses this report may send to the
+	// labels-query-service; refreshSet says it was read from the hook.
+	refreshLeft int
+	refreshSet  bool
 	// btc is the Bitcoin scratch: the receipt and spend transactions
 	// assetsBitcoin read, which counterpartiesBitcoin consumes (nil off Bitcoin).
 	btc *btcState
@@ -470,6 +475,46 @@ func (e *executor) counterparties(ctx context.Context, in cpInput) (edgesResult,
 	return edges, other, nil
 }
 
+// refreshLabels asks the labels-query-service for the addresses before their
+// labels are read, when the labels source carries the hook, so a label the
+// service finds is in the table the read then scans. One report sends at most
+// the hook's cap over every read it makes, the earlier reads first, so the
+// address and its direct counterparties come before the deeper hops. The
+// refresh ends before the label read's own start floor, so it never takes the
+// time the read needs; with under a second to give it, it is skipped. A
+// failure is the hook's to log and count: the read runs either way.
+func (e *executor) refreshLabels(ctx context.Context, chain string, addrs []string) {
+	hook, ok := e.labels.(bitquerylabels.HookSource)
+	if !ok || len(addrs) == 0 {
+		return
+	}
+	pre := hook.BitqueryLabelsPreprocessor()
+	if pre == nil {
+		return
+	}
+	if !e.refreshSet {
+		e.refreshLeft = pre.MaxAddresses()
+		e.refreshSet = true
+	}
+	if pre.MaxAddresses() > 0 && e.refreshLeft <= 0 {
+		return
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		end := dl.Add(-minStartSeconds * time.Second)
+		if time.Until(end) < time.Second {
+			return
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, end)
+		defer cancel()
+	}
+	start := time.Now()
+	sent := pre.Refresh(ctx, addrs, []string{chain}, e.refreshLeft)
+	e.took("labels_refresh", time.Since(start))
+	e.cost.Detail = append(e.cost.Detail, statementCost{Name: "labels_refresh", ElapsedMS: time.Since(start).Milliseconds()})
+	e.refreshLeft -= sent
+}
+
 // labelRows reads the labels of a set of addresses, in batches. The addresses
 // are validated against the chain's own address form so a batch carries only
 // well-formed literals (the Tron form drops every Bitcoin address, and the
@@ -490,6 +535,7 @@ func (e *executor) labelRows(ctx context.Context, chain string, addrs []string) 
 			uniq = append(uniq, a)
 		}
 	}
+	e.refreshLabels(ctx, chain, uniq)
 	out := map[string][]labelRow{}
 	for i := 0; i < len(uniq); i += e.th.LabelBatch {
 		batch := uniq[i:min(i+e.th.LabelBatch, len(uniq))]

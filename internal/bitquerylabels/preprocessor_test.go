@@ -161,6 +161,37 @@ func TestPreprocessCapsAddresses(t *testing.T) {
 func TestPreprocessNilSafe(t *testing.T) {
 	var p *Preprocessor
 	p.Preprocess(context.Background(), map[string]any{"address": evmAddr})
+	if p.Refresh(context.Background(), []string{evmAddr}, nil, 0) != 0 || p.MaxAddresses() != 0 {
+		t.Errorf("a nil preprocessor sent an address")
+	}
+}
+
+// Refresh sends the first limit addresses on the given chain and reports how
+// many: a limit under the cap wins, a limit of 0 or over the cap means the cap.
+func TestRefreshLimit(t *testing.T) {
+	addrs := []string{evmAddr, evmAddr2, "0xdac17f958d2ee523a2206206994597c13d831ec7"}
+	for _, tc := range []struct {
+		name  string
+		cap   int
+		limit int
+		want  int
+	}{
+		{"under the cap", 100, 2, 2},
+		{"no limit", 100, 0, 3},
+		{"over the cap", 2, 500, 2},
+		{"no cap", 0, 0, 3},
+	} {
+		client := &recordingClient{}
+		p := NewPreprocessor(client, nil, "")
+		p.maxAddresses = tc.cap
+		if got := p.Refresh(context.Background(), addrs, []string{"eth"}, tc.limit); got != tc.want {
+			t.Errorf("%s: sent %d, want %d", tc.name, got, tc.want)
+		}
+		want := []Request{{Addresses: addrs[:tc.want], Chain: "ethereum"}}
+		if diff := cmp.Diff(want, client.requests); diff != "" {
+			t.Errorf("%s: mismatch (-want +got):\n%s", tc.name, diff)
+		}
+	}
 }
 
 func TestNewDisabled(t *testing.T) {
