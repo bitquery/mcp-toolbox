@@ -31,6 +31,7 @@ import (
 	yaml "github.com/goccy/go-yaml"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/tools/bitquery/chainexec"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
 )
@@ -103,6 +104,12 @@ func (t Tool) ToConfig() tools.ToolConfig {
 }
 
 func (t Tool) ValidateSource(source sources.Source) error {
+	// The runner (chainexec.Exec) issues HTTP statements against the chain source,
+	// so the resolved source must be an http source — the same check the risk report
+	// makes, and the first use of chainexec by this kind.
+	if _, ok := source.(chainexec.HTTPSource); !ok {
+		return fmt.Errorf("invalid source for %q tool: source %q is not an http source", t.Cfg.Type, t.Cfg.Source)
+	}
 	return nil
 }
 
