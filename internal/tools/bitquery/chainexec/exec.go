@@ -131,9 +131,34 @@ func (e *Exec) MaxRows() (int64, error) {
 	return min(left, e.StatementMaxRows), nil
 }
 
-// Query posts one statement to the chain source and returns its rows. header is
-// the table the statement reads, as the X-Bitquery-Table header names it.
+// Query posts one statement to the chain source and returns its data rows.
+// header is the table the statement reads, as the X-Bitquery-Table header names
+// it. It leaves the source's own default_format in place, so a statement that
+// needs a single document ends with FORMAT JSON (as the risk report's do).
 func (e *Exec) Query(ctx context.Context, name, header, statement string) ([]map[string]any, error) {
+	doc, err := e.queryDoc(ctx, name, header, statement, "")
+	if err != nil {
+		return nil, err
+	}
+	return RowsOf(doc), nil
+}
+
+// QueryDoc posts one statement and returns the whole FORMAT JSON document — its
+// data rows, its WITH TOTALS totals row when present, and its statistics. It
+// forces default_format=JSON, so a source whose own default is JSONEachRow
+// (which emits neither a totals block nor statistics) still answers one
+// document; a kind that needs the totals row (the flow-graph remainder) uses
+// this rather than Query. The billing and cost accounting are identical to
+// Query's.
+func (e *Exec) QueryDoc(ctx context.Context, name, header, statement string) (map[string]any, error) {
+	return e.queryDoc(ctx, name, header, statement, "JSON")
+}
+
+// queryDoc runs one statement and returns its parsed JSON document. format, when
+// not empty, overrides the source's default_format query parameter. The
+// statement is billed to the caller through its own query_id, held to the end of
+// the query, and recorded in the cost ledger whether it succeeded or failed.
+func (e *Exec) queryDoc(ctx context.Context, name, header, statement, format string) (map[string]any, error) {
 	if err := e.MayStart(ctx, name); err != nil {
 		return nil, err
 	}
@@ -158,11 +183,14 @@ func (e *Exec) Query(ctx context.Context, name, header, statement string) ([]map
 	if stamp {
 		q.Set("query_id", qid)
 	}
-	// A statement answers FORMAT JSON, one document: with the answer held to the
-	// end of the query, a limit or a timeout that fires after the first block is
-	// an HTTP error (classified as a limit), not a body cut short. Set here,
-	// whatever the source's own parameters say.
+	// A statement answers one held document: with the answer held to the end of
+	// the query, a limit or a timeout that fires after the first block is an HTTP
+	// error (classified as a limit), not a body cut short. Set here, whatever the
+	// source's own parameters say.
 	q.Set("wait_end_of_query", "1")
+	if format != "" {
+		q.Set("default_format", format)
+	}
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(statement))
 	if err != nil {
@@ -194,6 +222,11 @@ func (e *Exec) Query(ctx context.Context, name, header, statement string) ([]map
 	e.Cost.RowsRead += sc.RowsRead
 	e.Cost.BytesRead += sc.BytesRead
 	e.Cost.Detail = append(e.Cost.Detail, sc)
+	return doc, nil
+}
+
+// RowsOf is the data rows of a FORMAT JSON document.
+func RowsOf(doc map[string]any) []map[string]any {
 	data, _ := doc["data"].([]any)
 	rows := make([]map[string]any, 0, len(data))
 	for _, d := range data {
@@ -201,7 +234,14 @@ func (e *Exec) Query(ctx context.Context, name, header, statement string) ([]map
 			rows = append(rows, r)
 		}
 	}
-	return rows, nil
+	return rows
+}
+
+// TotalsOf is the WITH TOTALS totals row of a FORMAT JSON document; nil when the
+// statement carried no WITH TOTALS.
+func TotalsOf(doc map[string]any) map[string]any {
+	t, _ := doc["totals"].(map[string]any)
+	return t
 }
 
 // AsInt coerces a ClickHouse JSON value to int64.
