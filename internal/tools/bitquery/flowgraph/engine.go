@@ -14,18 +14,19 @@
 
 package flowgraph
 
-// The counterparties method. One call parses the 1–50 address set, resolves the
-// window to fixed instants, renders the chain's statement with built literals,
-// runs it once through the shared runner, and shapes the top-K counterparties
-// plus the below_cutoff remainder derived from the statement's WITH TOTALS row.
-// Labels (group_by=label_type) and the keyset cursor are added in following
-// changes; this file is group_by=address.
+// The counterparties method. One call parses the 1–50 address set, the
+// direction and filters, resolves the window to fixed instants, renders the
+// chain's statement with built literals, runs it once through the shared runner,
+// and shapes the top-K counterparties plus the below_cutoff remainder derived
+// from the statement's WITH TOTALS row. The keyset cursor is a following change;
+// the label filters are carried here and applied by the output shaping.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -81,12 +82,23 @@ type request struct {
 	invalid         []string
 	requested       int
 	groupBy         string
+	direction       string // in | out | both
 	wStart, wEnd    time.Time
 	includeInternal int
+	includeZero     int
+	token           string // "" = all, else the chain's token key (EVM: 40 lower-hex, no 0x)
 	minUsd          float64
 	limit           int
-	format          string
+	// labelTypes / excludeLabelTypes are carried for the output shaping to filter
+	// counterparties by their labels; they do not reach the SQL.
+	labelTypes        []string
+	excludeLabelTypes []string
+	format            string
 }
+
+// keepSender / keepReceiver turn the direction into the two statement arms.
+func (r request) keepSender() bool   { return r.direction == "both" || r.direction == "out" }
+func (r request) keepReceiver() bool { return r.direction == "both" || r.direction == "in" }
 
 func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError) {
 	start := time.Now()
@@ -103,12 +115,17 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		return nil, agentErr("%v", err)
 	}
 	statement, err := render(t.stmts[req.chain], stmtVars{
-		SetLiteral:      setLit,
-		WStart:          sqlTime(req.wStart),
-		WEnd:            sqlTime(req.wEnd),
-		IncludeInternal: req.includeInternal,
-		TopK:            req.limit,
-		MinUsd:          formatFloat(req.minUsd),
+		SetLiteral:       setLit,
+		WStart:           sqlTime(req.wStart),
+		WEnd:             sqlTime(req.wEnd),
+		IncludeInternal:  req.includeInternal,
+		IncludeZeroValue: req.includeZero,
+		KeepSender:       req.keepSender(),
+		KeepReceiver:     req.keepReceiver(),
+		TokenFilter:      req.token,
+		MultiAddr:        len(req.addrs) > 1,
+		TopK:             req.limit,
+		MinUsd:           formatFloat(req.minUsd),
 	})
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
@@ -220,6 +237,16 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		return request{}, agentErr("group_by must be address or label_type")
 	}
 
+	req.direction = strings.ToLower(strings.TrimSpace(chainexec.AsStr(p["direction"])))
+	if req.direction == "" {
+		req.direction = "both"
+	}
+	switch req.direction {
+	case "in", "out", "both":
+	default:
+		return request{}, agentErr("direction must be in, out or both")
+	}
+
 	before, hasBefore, err := parseTime(chainexec.AsStr(p["before_time"]))
 	if err != nil {
 		return request{}, agentErr("before_time: %v", err)
@@ -237,12 +264,35 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if !after.Before(before) {
 		return request{}, agentErr("after_time must be before before_time")
 	}
+	// The requested window is used as given — never silently shortened (the
+	// eth_flows_between 366-day cut, which AT1/AT9 need lifted).
 	req.wStart, req.wEnd = after, before
 
 	if v, ok := p["include_internal"]; ok && v != nil {
 		req.includeInternal = clampBit(chainexec.AsInt(v))
 	} else {
 		req.includeInternal = defaultIncludeInternal(chain)
+	}
+
+	if v, ok := p["include_zero_value"]; ok && v != nil {
+		req.includeZero = clampBit(chainexec.AsInt(v))
+	}
+
+	if tok := strings.TrimSpace(chainexec.AsStr(p["token"])); tok != "" {
+		key, ok := codec.tokenKey(tok)
+		if !ok {
+			return request{}, agentErr("token must be a %s token id", chain)
+		}
+		req.token = key
+	}
+
+	req.labelTypes, err = parseLabelTypes(chainexec.AsStr(p["label_type"]))
+	if err != nil {
+		return request{}, agentErr("label_type: %v", err)
+	}
+	req.excludeLabelTypes, err = parseLabelTypes(chainexec.AsStr(p["exclude_label_type"]))
+	if err != nil {
+		return request{}, agentErr("exclude_label_type: %v", err)
 	}
 
 	req.minUsd = asFloat(p["min_usd"])
@@ -269,6 +319,30 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		return request{}, agentErr("format must be markdown or json")
 	}
 	return req, nil
+}
+
+var labelTypeRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// parseLabelTypes splits a comma list of label types, lower-cases and validates
+// each; the values are carried into the request and used by the output shaping
+// to keep or drop counterparties, never put into SQL.
+func parseLabelTypes(s string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(s, ",") {
+		t := strings.ToLower(strings.TrimSpace(part))
+		if t == "" {
+			continue
+		}
+		if !labelTypeRe.MatchString(t) {
+			return nil, fmt.Errorf("not a label type: %q", t)
+		}
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // settingsClause is the SETTINGS the engine appends to every statement: the row
@@ -309,12 +383,15 @@ func parseTime(s string) (time.Time, bool, error) {
 	if s == "" {
 		return time.Time{}, false, nil
 	}
+	if unix, err := strconv.ParseInt(s, 10, 64); err == nil && len(s) == 10 {
+		return time.Unix(unix, 0).UTC(), true, nil
+	}
 	for _, l := range timeLayouts {
 		if t, err := time.Parse(l, s); err == nil {
 			return t.UTC(), true, nil
 		}
 	}
-	return time.Time{}, false, fmt.Errorf("not a time: %q (use YYYY-MM-DD or an RFC3339 timestamp)", s)
+	return time.Time{}, false, fmt.Errorf("not a time: %q (use YYYY-MM-DD, an RFC3339 timestamp or 10-digit unix seconds)", s)
 }
 
 func sqlTime(t time.Time) string {

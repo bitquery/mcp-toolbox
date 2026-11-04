@@ -19,10 +19,11 @@ package flowgraph
 // sibling of *_flow_edges, so it cannot drift from them) parsed as a Go
 // text/template that reads ONLY the fields of stmtVars. Every one of those
 // fields is a ClickHouse literal this package built from a validated input — a
-// chain codec turned a checked address into the set array, a validated time
-// into toDateTime('…','UTC'), an int into its digits. Nothing the caller or the
-// returned data supplies reaches a statement except as one of those built
-// literals, so the template being cfg-authored does not widen the surface.
+// chain codec turned a checked address into the set array or a token key, a
+// validated time into toDateTime('…','UTC'), an int into its digits, a direction
+// into booleans. Nothing the caller or the returned data supplies reaches a
+// statement except as one of those built literals, so the template being
+// cfg-authored does not widen the surface.
 
 import (
 	"fmt"
@@ -41,6 +42,25 @@ type stmtVars struct {
 	WEnd   string
 	// IncludeInternal is 0 or 1 (nested 'call' transfers counted when 1).
 	IncludeInternal int
+	// IncludeZeroValue is 0 or 1 (zero-amount transfers kept when 1; off by
+	// default, so an address-poisoning zero-value look-alike is dropped).
+	IncludeZeroValue int
+	// KeepSender and KeepReceiver select the direction: KeepSender keeps the arm
+	// that reads what the set SENT (the set's outflow, the counterparty received),
+	// KeepReceiver the arm that reads what the set RECEIVED (its inflow). both =
+	// both true, out = sender only, in = receiver only. A statement omits an arm
+	// whose flag is false, so an excluded direction is never scanned.
+	KeepSender   bool
+	KeepReceiver bool
+	// TokenFilter is "" (all tokens) or a single token's key in the chain's
+	// encoding (for EVM, the 40-char lower-hex contract, no 0x), validated by the
+	// codec; the statement compares it against each transfer's token key.
+	TokenFilter string
+	// MultiAddr is true when the address set has more than one member. The
+	// Self_Transfers subquery (inter-set transfers) is emitted only then; a
+	// single-address set cannot have an inter-set transfer, so it renders a
+	// literal 0 and the statement pays no extra scan for it.
+	MultiAddr bool
 	// TopK is the result-row cap before the WITH TOTALS remainder.
 	TopK int
 	// MinUsd is an optional USD floor as a decimal literal ("0" = off).
@@ -61,13 +81,17 @@ func render(t *template.Template, v stmtVars) (string, error) {
 // chainCodec validates a chain's addresses and builds the ClickHouse array
 // literal of an address set in that chain's column encoding. The counterparties
 // a statement returns are decoded inside the statement (concat('0x',hex) /
-// base58), so a codec is the write side (the set) plus the validator the result
-// check and the labels read reuse.
+// base58), so a codec is the write side (the set, and a single token key) plus
+// the validator the result check and the labels read reuse.
 type chainCodec interface {
 	chain() string
 	valid(addr string) bool
 	normalize(addr string) string
 	setLiteral(addrs []string) (string, error)
+	// tokenKey turns a validated token id into the key the statement compares
+	// against each transfer's token column; ("", false) when the id is not valid
+	// for the chain. For EVM it is the 40-char lower-hex contract, no 0x.
+	tokenKey(addr string) (string, bool)
 }
 
 var codecs = map[string]chainCodec{}
@@ -90,8 +114,8 @@ type evmCodec struct{ name string }
 
 var evmAddrRe = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
-func (c evmCodec) chain() string          { return c.name }
-func (evmCodec) valid(a string) bool      { return evmAddrRe.MatchString(a) }
+func (c evmCodec) chain() string           { return c.name }
+func (evmCodec) valid(a string) bool       { return evmAddrRe.MatchString(a) }
 func (evmCodec) normalize(a string) string { return strings.ToLower(a) }
 
 func (evmCodec) setLiteral(addrs []string) (string, error) {
@@ -107,6 +131,15 @@ func (evmCodec) setLiteral(addrs []string) (string, error) {
 		parts = append(parts, fmt.Sprintf("toFixedString(unhex('%s'),20)", hex))
 	}
 	return "[" + strings.Join(parts, ", ") + "]", nil
+}
+
+// tokenKey is the token contract as the statement's token_key: 40 lower-hex, no
+// 0x (the statement derives each transfer's key as lower(hex(SmartContract))).
+func (evmCodec) tokenKey(a string) (string, bool) {
+	if !evmAddrRe.MatchString(a) {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimPrefix(strings.ToLower(a), "0x")), true
 }
 
 // The EVM chains this kind can serve. Each shares evmCodec; the per-chain
