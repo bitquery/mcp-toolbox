@@ -27,7 +27,12 @@ func testLabelMethod(t *testing.T) *labelMethod {
 			{Match: ``, Class: "vendor"},
 		},
 		nil, // default class rank
-		[]string{"spam"},
+		[]string{"high-transacting", "signer", "deployer", "spam"}, // never-pick
+		[]string{ // priority (a subset in BIT-16068 section-3 order)
+			"sanctioned-entity", "bridge",
+			"dex-router", "asset-manager", "contract",
+		},
+		nil, // other-order empty -> alphabetical fallback
 	)
 	if err != nil {
 		t.Fatalf("compileLabelMethod: %v", err)
@@ -35,37 +40,68 @@ func testLabelMethod(t *testing.T) *labelMethod {
 	return m
 }
 
-func TestPickClassRank(t *testing.T) {
+func TestPick(t *testing.T) {
 	m := testLabelMethod(t)
-	// A sanctions-list source outranks a vendor one, whatever the type names.
+
+	// CoW-like set: dex-router alongside several never-pick/attribute types and the
+	// lower-priority asset-manager and contract types. The pick is dex-router: the
+	// never-pick types are dropped and dex-router outranks asset-manager/contract in
+	// the priority list. (This is AT3: Label_Type is dex-router, never
+	// high-transacting/signer/deployer.)
 	lt, _, types := m.pick([]labelRow{
-		{LabelType: "exchange", Value: "binance", Source: "some-vendor"},
+		{LabelType: "high-transacting", Value: "x", Source: "some-vendor"},
+		{LabelType: "signer", Value: "y", Source: "some-vendor"},
+		{LabelType: "deployer", Value: "z", Source: "some-vendor"},
+		{LabelType: "asset-manager", Value: "wintermute", Source: "some-vendor"},
+		{LabelType: "dex-router", Value: "cowswap", Source: "some-vendor"},
+		{LabelType: "contract", Value: "settlement", Source: "some-vendor"},
+	})
+	if lt != "dex-router" {
+		t.Fatalf("pick = %q, want dex-router (priority beats asset-manager/contract; never-pick dropped)", lt)
+	}
+	if len(types) != 6 {
+		t.Fatalf("types = %v, want all 6 listed (including never-pick types)", types)
+	}
+
+	// Risk first: a risk type outranks a DeFi type whatever the source.
+	if lt, _, _ := m.pick([]labelRow{
+		{LabelType: "dex-router", Value: "d", Source: "some-vendor"},
 		{LabelType: "sanctioned-entity", Value: "ofac-123", Source: "ofac"},
-	})
-	if lt != "sanctioned-entity" {
-		t.Fatalf("pick = %q, want sanctioned-entity (sanctions-list beats vendor)", lt)
+	}); lt != "sanctioned-entity" {
+		t.Fatalf("pick = %q, want sanctioned-entity (risk first in priority)", lt)
 	}
-	if len(types) != 2 {
-		t.Fatalf("types = %v, want both", types)
+
+	// Within one chosen type, the more-trusted source class wins the value.
+	if _, v, _ := m.pick([]labelRow{
+		{LabelType: "bridge", Value: "vendor-name", Source: "some-vendor"},
+		{LabelType: "bridge", Value: "ofac-name", Source: "ofac"},
+	}); v != "ofac-name" {
+		t.Fatalf("within-type value = %q, want ofac-name (sanctions-list class beats vendor)", v)
 	}
-	// neverPick type is never the primary, but still listed.
+
+	// Only never-pick / attribute-only types: no primary, but they still appear in types.
 	lt, _, types = m.pick([]labelRow{
-		{LabelType: "spam", Value: "x", Source: "some-vendor"},
-		{LabelType: "exchange", Value: "kraken", Source: "some-vendor"},
+		{LabelType: "high-transacting", Value: "x", Source: "v"},
+		{LabelType: "signer", Value: "y", Source: "v"},
 	})
-	if lt != "exchange" {
-		t.Fatalf("pick = %q, want exchange (spam is never-pick)", lt)
+	if lt != "" {
+		t.Fatalf("pick = %q, want empty (only never-pick types -> unlabeled)", lt)
 	}
 	if len(types) != 2 {
-		t.Fatalf("types = %v, want spam listed too", types)
+		t.Fatalf("types = %v, want both never-pick types listed", types)
 	}
-	// All never-pick -> no primary.
-	if lt, _, _ := m.pick([]labelRow{{LabelType: "spam", Source: "v"}}); lt != "" {
-		t.Fatalf("pick = %q, want empty", lt)
-	}
-	// No labels -> no primary.
+
+	// No labels: no primary.
 	if lt, _, _ := m.pick(nil); lt != "" {
 		t.Fatalf("pick(nil) = %q, want empty", lt)
+	}
+
+	// A type in neither priority nor other-order ranks after every priority type.
+	if lt, _, _ := m.pick([]labelRow{
+		{LabelType: "zebra-type", Value: "z", Source: "v"},
+		{LabelType: "contract", Value: "c", Source: "v"},
+	}); lt != "contract" {
+		t.Fatalf("pick = %q, want contract (a priority type beats an unknown type)", lt)
 	}
 }
 

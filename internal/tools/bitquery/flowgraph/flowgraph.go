@@ -78,6 +78,8 @@ type Config struct {
 	LabelSources []SourceClassRule      `yaml:"labelSources"`
 	ClassRank    []string               `yaml:"classRank"`
 	NeverPick    []string               `yaml:"neverPick"`
+	Priority     []string               `yaml:"labelPriority"`
+	OtherOrder   []string               `yaml:"labelOtherOrder"`
 	Parameters   parameters.Parameters  `yaml:"parameters"`
 	Annotations  *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
@@ -120,7 +122,7 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	lm, err := compileLabelMethod(cfg.LabelSources, cfg.ClassRank, cfg.NeverPick)
+	lm, err := compileLabelMethod(cfg.LabelSources, cfg.ClassRank, cfg.NeverPick, cfg.Priority, cfg.OtherOrder)
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: %w", cfg.Name, err)
 	}

@@ -24,7 +24,7 @@ import (
 
 func testTool() Tool {
 	tmpl := template.Must(template.New("x").Parse("SELECT {{.TopK}}"))
-	lm, _ := compileLabelMethod(nil, nil, nil)
+	lm, _ := compileLabelMethod(nil, nil, nil, nil, nil)
 	return Tool{
 		stmts:  map[string]*template.Template{"ethereum": tmpl, "arc": tmpl},
 		chains: map[string]chainexec.HTTPSource{"ethereum": nil, "arc": nil},
