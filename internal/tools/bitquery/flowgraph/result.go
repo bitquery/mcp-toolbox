@@ -24,6 +24,7 @@ package flowgraph
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -46,6 +47,11 @@ type cpRow struct {
 	UnpricedTransfersOut int64    `json:"unpriced_transfers_out"`
 	FirstSeen            string   `json:"first_seen"`
 	LastSeen             string   `json:"last_seen"`
+	// Label is the primary label type picked for the counterparty ("" = none);
+	// LabelValue its value; Labels every distinct label type it carries.
+	Label      string   `json:"label,omitempty"`
+	LabelValue string   `json:"label_value,omitempty"`
+	Labels     []string `json:"labels,omitempty"`
 }
 
 // remainder is every counterparty not in the returned top-K: its USD and its
@@ -173,14 +179,121 @@ func (r result) markdown() string {
 	if r.Partial {
 		b.WriteString("Partial: the call stopped on its budget before it was complete.\n")
 	}
-	b.WriteString("\ncounterparty,usd_in,usd_out,transfers_in,transfers_out,first_seen,last_seen\n")
+	b.WriteString("\ncounterparty,label,usd_in,usd_out,transfers_in,transfers_out,first_seen,last_seen\n")
 	n := len(r.Counterparties)
 	if n > 100 {
 		n = 100
 	}
 	for _, c := range r.Counterparties[:n] {
-		fmt.Fprintf(&b, "%s,%s,%s,%d,%d,%s,%s\n",
-			c.Counterparty, usdP(c.UsdIn), usdP(c.UsdOut), c.TransfersIn, c.TransfersOut, c.FirstSeen, c.LastSeen)
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%d,%d,%s,%s\n",
+			c.Counterparty, c.Label, usdP(c.UsdIn), usdP(c.UsdOut), c.TransfersIn, c.TransfersOut, c.FirstSeen, c.LastSeen)
+	}
+	return b.String()
+}
+
+// attachLabels picks a primary label type for each returned counterparty and
+// records every type it carries. Fetched once for the returned page.
+func (t Tool) attachLabels(r *result, byAddr map[string][]labelRow) {
+	for i := range r.Counterparties {
+		c := &r.Counterparties[i]
+		lt, lv, types := t.lm.pick(byAddr[strings.ToLower(c.Counterparty)])
+		c.Label, c.LabelValue, c.Labels = lt, lv, types
+	}
+}
+
+// typeRow is one label type's share of the flow.
+type typeRow struct {
+	LabelType      string  `json:"label_type"`
+	Counterparties int     `json:"counterparties"`
+	Usd            float64 `json:"usd"`
+	Share          float64 `json:"share"`
+}
+
+// typeResult is the group_by=label_type answer: the flow totalled by the
+// primary label type of each returned counterparty, plus a (none) row for the
+// unlabeled and a (below_cutoff) row for the counterparties past the top-K, so
+// the shares sum to 100% of the base.
+type typeResult struct {
+	Chain              string            `json:"chain"`
+	GroupBy            string            `json:"group_by"`
+	Window             windowOut         `json:"window"`
+	AddressesRequested int               `json:"addresses_requested"`
+	AddressesUsed      int               `json:"addresses_used"`
+	AddressesInvalid   []string          `json:"addresses_invalid,omitempty"`
+	IncludeInternal    int               `json:"include_internal"`
+	ShareBaseUsd       float64           `json:"share_base_usd"`
+	Types              []typeRow         `json:"types"`
+	Partial            bool              `json:"partial"`
+	Cost               chainexec.CostOut `json:"cost"`
+	TimingMS           int64             `json:"timing_ms"`
+}
+
+// shapeLabelType totals the returned counterparties' USD by their primary label
+// type (unlabeled -> (none)), adds the below_cutoff remainder as its own row,
+// and divides by the grand total so the shares sum to 100%.
+func (t Tool) shapeLabelType(req request, doc map[string]any, byAddr map[string][]labelRow) typeResult {
+	res := typeResult{
+		Chain:   req.chain,
+		GroupBy: "label_type",
+		Window: windowOut{
+			AfterTime:  sqlTimePlain(req.wStart),
+			BeforeTime: sqlTimePlain(req.wEnd),
+		},
+		AddressesRequested: req.requested,
+		AddressesUsed:      len(req.addrs),
+		AddressesInvalid:   req.invalid,
+		IncludeInternal:    req.includeInternal,
+	}
+	usdByType := map[string]float64{}
+	cntByType := map[string]int{}
+	for _, r := range chainexec.RowsOf(doc) {
+		addr := strings.ToLower(chainexec.AsStr(r["Counterparty"]))
+		lt, _, _ := t.lm.pick(byAddr[addr])
+		if lt == "" {
+			lt = noneLabel
+		}
+		usdByType[lt] += asFloat(r["Usd_Total"])
+		cntByType[lt]++
+	}
+	var base float64
+	var sumReturned float64
+	if tot := chainexec.TotalsOf(doc); tot != nil {
+		base = asFloat(tot["Usd_Total"])
+	}
+	for _, v := range usdByType {
+		sumReturned += v
+	}
+	// The remainder: every counterparty past the top-K, as one bucket.
+	below := nonNeg(base - sumReturned)
+	res.ShareBaseUsd = base
+	for lt, usd := range usdByType {
+		res.Types = append(res.Types, typeRow{LabelType: lt, Counterparties: cntByType[lt], Usd: usd, Share: shareOf(usd, base)})
+	}
+	if below > 0 {
+		res.Types = append(res.Types, typeRow{LabelType: belowCutoffLabel, Usd: below, Share: shareOf(below, base)})
+	}
+	sort.Slice(res.Types, func(i, j int) bool { return res.Types[i].Usd > res.Types[j].Usd })
+	return res
+}
+
+func shareOf(a, base float64) float64 {
+	if base <= 0 || math.IsNaN(base) {
+		return 0
+	}
+	return a / base
+}
+
+func (r typeResult) markdown() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Counterparties by label type — %s\n\n", r.Chain)
+	fmt.Fprintf(&b, "Window %s → %s UTC. Addresses: %d requested, %d used.\n", r.Window.AfterTime, r.Window.BeforeTime, r.AddressesRequested, r.AddressesUsed)
+	fmt.Fprintf(&b, "Share base (total flow in + out): $%s.\n", usd(r.ShareBaseUsd))
+	if r.Partial {
+		b.WriteString("Partial: the labels were not all read before the budget; shares are over what was.\n")
+	}
+	b.WriteString("\nlabel_type,counterparties,usd,share_pct\n")
+	for _, ty := range r.Types {
+		fmt.Fprintf(&b, "%s,%d,%s,%.2f\n", ty.LabelType, ty.Counterparties, usd(ty.Usd), ty.Share*100)
 	}
 	return b.String()
 }

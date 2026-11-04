@@ -72,9 +72,14 @@ type Config struct {
 	Statements map[string]string `yaml:"statements"`
 	// Budget bounds a call: its deadline, and the per-statement time and rows.
 	// Zero fields take the defaults in Budget.withDefaults.
-	Budget      Budget                 `yaml:"budget"`
-	Parameters  parameters.Parameters  `yaml:"parameters"`
-	Annotations *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+	Budget Budget `yaml:"budget"`
+	// The label-pick method: how a label source is classed, the trust order of
+	// those classes, and the label types that are never chosen as the primary.
+	LabelSources []SourceClassRule      `yaml:"labelSources"`
+	ClassRank    []string               `yaml:"classRank"`
+	NeverPick    []string               `yaml:"neverPick"`
+	Parameters   parameters.Parameters  `yaml:"parameters"`
+	Annotations  *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
 
 var _ tools.ToolConfig = Config{}
@@ -114,6 +119,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 	stmts, err := parseStatements(cfg)
 	if err != nil {
 		return nil, err
+	}
+	lm, err := compileLabelMethod(cfg.LabelSources, cfg.ClassRank, cfg.NeverPick)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q: %w", cfg.Name, err)
 	}
 	// The default source must be one of the chain sources, as the risk report
 	// requires: ValidateSource then confirms the resolved one is an http source.
@@ -156,6 +165,7 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		),
 		stmts:  stmts,
 		budget: cfg.Budget.withDefaults(),
+		lm:     lm,
 	}
 	// The sources come from the server at start-up. Offline flows (skills
 	// generation) initialize tools without them and never invoke one; a call is
@@ -221,9 +231,11 @@ type Tool struct {
 	tools.BaseTool[Config]
 	// stmts is the compiled statement template of each configured chain.
 	stmts map[string]*template.Template
-	// budget bounds a call (with defaults applied); chains and labels are the
-	// resolved sources (nil in an offline init, where a call is refused).
+	// budget bounds a call (with defaults applied); lm is the compiled label-pick
+	// method; chains and labels are the resolved sources (nil in an offline init,
+	// where a call is refused).
 	budget Budget
+	lm     *labelMethod
 	chains map[string]chainexec.HTTPSource
 	labels sqlSource
 }

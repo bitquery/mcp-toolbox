@@ -137,7 +137,33 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		return nil, util.ProcessGeneralError(qerr)
 	}
 
+	// Labels for the returned counterparties (the top-K): group_by=address
+	// attaches them per row; group_by=label_type totals the flow by each one's
+	// primary type. Fetched once, over the returned page only.
+	rows := chainexec.RowsOf(doc)
+	addrs := make([]string, 0, len(rows))
+	for _, r := range rows {
+		addrs = append(addrs, strings.ToLower(chainexec.AsStr(r["Counterparty"])))
+	}
+	byAddr, partial, lerr := t.fetchLabels(ctx, ex, req.chain, addrs)
+	if lerr != nil {
+		return nil, util.ProcessGeneralError(lerr)
+	}
+
+	if req.groupBy == "label_type" {
+		tres := t.shapeLabelType(req, doc, byAddr)
+		tres.Partial = partial
+		tres.Cost = ex.Cost
+		tres.TimingMS = time.Since(start).Milliseconds()
+		if req.format == "json" {
+			return tres, nil
+		}
+		return tools.TextResult{Text: tres.markdown()}, nil
+	}
+
 	res := shapeAddress(req, doc)
+	t.attachLabels(&res, byAddr)
+	res.Partial = partial
 	res.Cost = ex.Cost
 	res.TimingMS = time.Since(start).Milliseconds()
 	if req.format == "json" {
@@ -189,9 +215,7 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		req.groupBy = "address"
 	}
 	switch req.groupBy {
-	case "address":
-	case "label_type":
-		return request{}, agentErr("group_by=label_type is not available yet")
+	case "address", "label_type":
 	default:
 		return request{}, agentErr("group_by must be address or label_type")
 	}

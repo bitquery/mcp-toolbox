@@ -24,10 +24,12 @@ import (
 
 func testTool() Tool {
 	tmpl := template.Must(template.New("x").Parse("SELECT {{.TopK}}"))
+	lm, _ := compileLabelMethod(nil, nil, nil)
 	return Tool{
 		stmts:  map[string]*template.Template{"ethereum": tmpl, "arc": tmpl},
 		chains: map[string]chainexec.HTTPSource{"ethereum": nil, "arc": nil},
 		budget: Budget{}.withDefaults(),
+		lm:     lm,
 	}
 }
 
@@ -89,7 +91,6 @@ func TestParseRejections(t *testing.T) {
 		{"no valid address", map[string]any{"chain": "ethereum", "addresses": "garbage"}},
 		{"unknown chain", map[string]any{"chain": "dogecoin", "addresses": addrA}},
 		{"no statement", map[string]any{"chain": "bsc", "addresses": addrA}},
-		{"label_type not yet", map[string]any{"chain": "ethereum", "addresses": addrA, "group_by": "label_type"}},
 		{"bad group_by", map[string]any{"chain": "ethereum", "addresses": addrA, "group_by": "token"}},
 		{"after after before", map[string]any{"chain": "ethereum", "addresses": addrA, "after_time": "2026-11-03", "before_time": "2026-08-05"}},
 		{"bad time", map[string]any{"chain": "ethereum", "addresses": addrA, "before_time": "nonsense"}},
@@ -159,7 +160,7 @@ func TestShapeAddressRemainder(t *testing.T) {
 		t.Errorf("status counters wrong: %+v", res.Totals)
 	}
 	// Markdown renders without panicking and carries the CSV header.
-	if md := res.markdown(); !strings.Contains(md, "counterparty,usd_in,usd_out") {
+	if md := res.markdown(); !strings.Contains(md, "counterparty,label,usd_in,usd_out") {
 		t.Error("markdown missing CSV header")
 	}
 }
