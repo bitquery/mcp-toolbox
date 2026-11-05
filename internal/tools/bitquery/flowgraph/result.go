@@ -49,9 +49,77 @@ type cpRow struct {
 	LastSeen             string   `json:"last_seen"`
 	// Label is the primary label type picked for the counterparty ("" = none);
 	// LabelValue its value; Labels every distinct label type it carries.
-	Label      string   `json:"label,omitempty"`
-	LabelValue string   `json:"label_value,omitempty"`
-	Labels     []string `json:"labels,omitempty"`
+	Label       string      `json:"label,omitempty"`
+	LabelValue  string      `json:"label_value,omitempty"`
+	Labels      []string    `json:"labels,omitempty"`
+	LabelStatus labelStatus `json:"label_status"`
+	// TokenCount is the number of distinct tokens moved with the counterparty;
+	// Tokens is the top-10 of them by USD (unpriced last). SetMembers is which of
+	// the input addresses dealt with this counterparty — emitted only for a set of
+	// more than one address (for a single address it is trivially that address).
+	TokenCount int64        `json:"token_count"`
+	Tokens     []tokenEntry `json:"tokens,omitempty"`
+	SetMembers []string     `json:"set_members,omitempty"`
+}
+
+// tokenEntry is one token's flow with a counterparty, as the statement emits it in
+// the Tokens array: the token already chain-encoded (0x contract on EVM, base58 on
+// Tron, "native" for the chain coin, "trc10:<id>" for a TRC-10), decimal-string
+// amounts in token units, and USD null for a side with no priced transfer.
+type tokenEntry struct {
+	Token        string   `json:"token"`
+	AmountIn     string   `json:"amount_in"`
+	AmountOut    string   `json:"amount_out"`
+	UsdIn        *float64 `json:"usd_in"`
+	UsdOut       *float64 `json:"usd_out"`
+	TransfersIn  int64    `json:"transfers_in"`
+	TransfersOut int64    `json:"transfers_out"`
+}
+
+// parseTokens turns the statement's Tokens column (an array of positional tuples)
+// into typed entries; a malformed element is skipped.
+func parseTokens(v any) []tokenEntry {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]tokenEntry, 0, len(arr))
+	for _, e := range arr {
+		t, ok := e.([]any)
+		if !ok || len(t) < 7 {
+			continue
+		}
+		out = append(out, tokenEntry{
+			Token:        chainexec.AsStr(t[0]),
+			AmountIn:     chainexec.AsStr(t[1]),
+			AmountOut:    chainexec.AsStr(t[2]),
+			UsdIn:        asFloatPtr(t[3]),
+			UsdOut:       asFloatPtr(t[4]),
+			TransfersIn:  chainexec.AsInt(t[5]),
+			TransfersOut: chainexec.AsInt(t[6]),
+		})
+	}
+	return out
+}
+
+// parseStrings turns a statement array column into a string slice.
+func parseStrings(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		out = append(out, chainexec.AsStr(e))
+	}
+	return out
+}
+
+func ptrOr0(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // remainder is every counterparty not in the returned top-K: its USD and its
@@ -87,7 +155,26 @@ type result struct {
 	Counterparties     []cpRow           `json:"counterparties"`
 	BelowCutoff        remainder         `json:"below_cutoff"`
 	Totals             totalsOut         `json:"totals"`
-	Partial            bool              `json:"partial"`
+	// SelfTransfers is the count of transfers between two input-set addresses
+	// (intra-set), excluded from the counterparty rows and the totals and counted
+	// here once; 0 for a single-address set.
+	SelfTransfers int64 `json:"self_transfers"`
+	// ShareBaseUsd*/LabeledUsdShare* describe the RETURNED page (the rows we hold
+	// labels for), not the full flow: ShareBaseUsd_In = sum of priced Usd_In over the
+	// returned counterparties; LabeledUsdShare_In = that fraction carried by a labeled
+	// counterparty. null when the page has no priced transfer on that side.
+	ShareBaseUsdIn     *float64 `json:"share_base_usd_in"`
+	ShareBaseUsdOut    *float64 `json:"share_base_usd_out"`
+	LabeledUsdShareIn  *float64 `json:"labeled_usd_share_in"`
+	LabeledUsdShareOut *float64 `json:"labeled_usd_share_out"`
+	// FilteredOut is how many of the page's counterparties label_type /
+	// exclude_label_type dropped. Totals and BelowCutoff are NOT recomputed for a
+	// filter — they stay the full-flow numbers — so this tells a filtered page from a
+	// short one. Walk the cursor to reach every matching counterparty.
+	FilteredOut int `json:"filtered_out,omitempty"`
+	// PickRule is the label-pick rule, verbatim, on every call (BIT-16068 section 3).
+	PickRule string `json:"pick_rule"`
+	Partial  bool   `json:"partial"`
 	// NextCursor is set when the returned page filled the limit, so more
 	// counterparties follow: pass it back as cursor (with the same addresses,
 	// window and filters) for the next page. Empty = the last page, or a Partial
@@ -131,6 +218,11 @@ func shapeAddress(req request, doc map[string]any) result {
 			UnpricedTransfersOut: chainexec.AsInt(r["Unpriced_Transfers_Out"]),
 			FirstSeen:            emptyTime(chainexec.AsStr(r["First_Seen"])),
 			LastSeen:             emptyTime(chainexec.AsStr(r["Last_Seen"])),
+			TokenCount:           chainexec.AsInt(r["Token_Count"]),
+			Tokens:               parseTokens(r["Tokens"]),
+		}
+		if len(req.addrs) > 1 {
+			row.SetMembers = parseStrings(r["Set_Members"])
 		}
 		res.Counterparties = append(res.Counterparties, row)
 		sumUsd += row.UsdTotal
@@ -147,10 +239,13 @@ func shapeAddress(req request, doc map[string]any) result {
 			Suspect:      chainexec.AsInt(tot["T_Suspect"]),
 			Stale:        chainexec.AsInt(tot["T_Stale"]),
 		}
+		// BelowCutoff is the remainder below the top-K, over the UNFILTERED page sums,
+		// so a label filter does not change it (Filtered_Out records the filter).
 		res.BelowCutoff = remainder{
 			Usd:       nonNeg(res.Totals.UsdTotal - sumUsd),
 			Transfers: nonNegInt(res.Totals.TransfersIn + res.Totals.TransfersOut - sumTransfers),
 		}
+		res.SelfTransfers = chainexec.AsInt(tot["Self_Transfers"])
 	}
 	return res
 }
@@ -180,11 +275,23 @@ func (r result) markdown() string {
 		fmt.Fprintf(&b, ", %d invalid (%s)", len(r.AddressesInvalid), strings.Join(r.AddressesInvalid, ", "))
 	}
 	b.WriteString(".\n\n")
-	fmt.Fprintf(&b, "Returned the top %d counterparties by USD (in + out). ", len(r.Counterparties))
-	fmt.Fprintf(&b, "Total flow $%s (in $%s, out $%s); below the cutoff $%s across %d transfers.\n",
-		usd(r.Totals.UsdTotal), usdP(r.Totals.UsdIn), usdP(r.Totals.UsdOut), usd(r.BelowCutoff.Usd), r.BelowCutoff.Transfers)
-	fmt.Fprintf(&b, "Unpriced transfers: %d no-price, %d suspect, %d stale.\n",
+	fmt.Fprintf(&b, "Returned %d counterparties by USD (in + out)", len(r.Counterparties))
+	if r.FilteredOut > 0 {
+		fmt.Fprintf(&b, " (%d more on the page were dropped by the label filter; walk the cursor for further matches)", r.FilteredOut)
+	}
+	b.WriteString(". ")
+	fmt.Fprintf(&b, "Total flow $%s (in $%s, out $%s); ", usd(r.Totals.UsdTotal), usdP(r.Totals.UsdIn), usdP(r.Totals.UsdOut))
+	if r.BelowCutoff.Usd == 0 && r.BelowCutoff.Transfers > 0 {
+		fmt.Fprintf(&b, "below the cutoff: unpriced ($0 priced) across %d transfers.\n", r.BelowCutoff.Transfers)
+	} else {
+		fmt.Fprintf(&b, "below the cutoff $%s across %d transfers.\n", usd(r.BelowCutoff.Usd), r.BelowCutoff.Transfers)
+	}
+	fmt.Fprintf(&b, "Unpriced transfers: %d no-price, %d suspect, %d stale.",
 		r.Totals.NoPrice, r.Totals.Suspect, r.Totals.Stale)
+	if r.SelfTransfers > 0 {
+		fmt.Fprintf(&b, " Self-transfers (intra-set, excluded from the above): %d.", r.SelfTransfers)
+	}
+	b.WriteString("\n")
 	if r.Partial {
 		b.WriteString("Partial: the call stopped on its budget before it was complete.\n")
 		if r.Hint != "" {
@@ -194,34 +301,108 @@ func (r result) markdown() string {
 	if r.NextCursor != "" {
 		fmt.Fprintf(&b, "More counterparties follow — pass cursor=%s with the same addresses, window and filters for the next page.\n", r.NextCursor)
 	}
-	b.WriteString("\ncounterparty,label,usd_in,usd_out,transfers_in,transfers_out,first_seen,last_seen\n")
+	if len(r.Counterparties) > 100 {
+		fmt.Fprintf(&b, "Showing 100 of %d counterparties on this page; format=json returns all.\n", len(r.Counterparties))
+	}
+	b.WriteString("\ncounterparty,label,label_status,usd_in,usd_out,transfers_in,transfers_out,unpriced_in,unpriced_out,token_count,first_seen,last_seen\n")
 	n := len(r.Counterparties)
 	if n > 100 {
 		n = 100
 	}
 	for _, c := range r.Counterparties[:n] {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%d,%d,%s,%s\n",
-			c.Counterparty, c.Label, usdP(c.UsdIn), usdP(c.UsdOut), c.TransfersIn, c.TransfersOut, c.FirstSeen, c.LastSeen)
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%d,%d,%d,%d,%d,%s,%s\n",
+			c.Counterparty, c.Label, c.LabelStatus, usdP(c.UsdIn), usdP(c.UsdOut),
+			c.TransfersIn, c.TransfersOut, c.UnpricedTransfersIn, c.UnpricedTransfersOut, c.TokenCount,
+			c.FirstSeen, c.LastSeen)
+	}
+	if r.PickRule != "" {
+		fmt.Fprintf(&b, "\n%s\n", r.PickRule)
 	}
 	return b.String()
 }
 
-// attachLabels picks a primary label type for each returned counterparty and
-// records every type it carries. Fetched once for the returned page.
-func (t Tool) attachLabels(r *result, byAddr map[string][]labelRow) {
+// attachLabels picks a primary label type for each returned counterparty, records
+// every type it carries and its Label_Status, applies the label_type /
+// exclude_label_type filters (dropping the non-matching rows and counting them in
+// Filtered_Out — Totals/BelowCutoff are NOT recomputed), and fills the share base
+// over the returned page. Pick_Rule is recorded for the call.
+func (t Tool) attachLabels(req request, r *result, byAddr map[string][]labelRow) {
+	r.PickRule = t.lm.PickRule()
 	for i := range r.Counterparties {
 		c := &r.Counterparties[i]
 		lt, lv, types := t.lm.pick(byAddr[strings.ToLower(c.Counterparty)])
 		c.Label, c.LabelValue, c.Labels = lt, lv, types
+		if lt != "" {
+			c.LabelStatus = statusLabeled
+		} else {
+			c.LabelStatus = statusUnlabeled
+		}
+	}
+	if len(req.labelTypes) > 0 || len(req.excludeLabelTypes) > 0 {
+		keep := r.Counterparties[:0]
+		for _, c := range r.Counterparties {
+			if matchLabelFilter(c.Label, req.labelTypes, req.excludeLabelTypes) {
+				keep = append(keep, c)
+			} else {
+				r.FilteredOut++
+			}
+		}
+		r.Counterparties = keep
+	}
+	// Share base + labeled share over the RETURNED (filtered) page — the only rows
+	// we hold labels for; not the full flow (below-cutoff counterparties are unlabeled
+	// here). null on a side with no priced transfer on the page.
+	var baseIn, baseOut, labIn, labOut float64
+	var anyIn, anyOut bool
+	for i := range r.Counterparties {
+		c := &r.Counterparties[i]
+		if c.UsdIn != nil {
+			anyIn = true
+			baseIn += *c.UsdIn
+			if c.Label != "" {
+				labIn += *c.UsdIn
+			}
+		}
+		if c.UsdOut != nil {
+			anyOut = true
+			baseOut += *c.UsdOut
+			if c.Label != "" {
+				labOut += *c.UsdOut
+			}
+		}
+	}
+	if anyIn {
+		r.ShareBaseUsdIn = &baseIn
+		if baseIn > 0 {
+			s := labIn / baseIn
+			r.LabeledUsdShareIn = &s
+		}
+	}
+	if anyOut {
+		r.ShareBaseUsdOut = &baseOut
+		if baseOut > 0 {
+			s := labOut / baseOut
+			r.LabeledUsdShareOut = &s
+		}
 	}
 }
 
-// typeRow is one label type's share of the flow.
+// cpBrief names a counterparty and its USD (in + out), for a label type's top few.
+type cpBrief struct {
+	Counterparty string  `json:"counterparty"`
+	Usd          float64 `json:"usd"`
+}
+
+// typeRow is one label type's share of the flow: the combined share plus the per-
+// direction shares and the type's largest counterparties.
 type typeRow struct {
-	LabelType      string  `json:"label_type"`
-	Counterparties int     `json:"counterparties"`
-	Usd            float64 `json:"usd"`
-	Share          float64 `json:"share"`
+	LabelType         string    `json:"label_type"`
+	Counterparties    int       `json:"counterparties"`
+	Usd               float64   `json:"usd"`
+	Share             float64   `json:"share"`
+	ShareIn           *float64  `json:"share_in"`
+	ShareOut          *float64  `json:"share_out"`
+	TopCounterparties []cpBrief `json:"top_counterparties,omitempty"`
 }
 
 // typeResult is the group_by=label_type answer: the flow totalled by the
@@ -237,7 +418,11 @@ type typeResult struct {
 	AddressesInvalid   []string          `json:"addresses_invalid,omitempty"`
 	IncludeInternal    int               `json:"include_internal"`
 	ShareBaseUsd       float64           `json:"share_base_usd"`
+	ShareBaseUsdIn     float64           `json:"share_base_usd_in"`
+	ShareBaseUsdOut    float64           `json:"share_base_usd_out"`
+	SelfTransfers      int64             `json:"self_transfers"`
 	Types              []typeRow         `json:"types"`
+	PickRule           string            `json:"pick_rule"`
 	Partial            bool              `json:"partial"`
 	Hint               string            `json:"hint,omitempty"`
 	Cost               chainexec.CostOut `json:"cost"`
@@ -260,33 +445,97 @@ func (t Tool) shapeLabelType(req request, doc map[string]any, byAddr map[string]
 		AddressesInvalid:   req.invalid,
 		IncludeInternal:    req.includeInternal,
 	}
-	usdByType := map[string]float64{}
-	cntByType := map[string]int{}
+	res.PickRule = t.lm.PickRule()
+	filtered := len(req.labelTypes) > 0 || len(req.excludeLabelTypes) > 0
+
+	type agg struct {
+		usd, usdIn, usdOut float64
+		cnt                int
+		tops               []cpBrief
+	}
+	byType := map[string]*agg{}
+	var order []string
 	for _, r := range chainexec.RowsOf(doc) {
 		addr := strings.ToLower(chainexec.AsStr(r["Counterparty"]))
 		lt, _, _ := t.lm.pick(byAddr[addr])
-		if lt == "" {
-			lt = noneLabel
+		// The filter is on the picked primary type; (none) is unlabeled, so it can
+		// never be in an include list and is not in exclude.
+		if filtered && !matchLabelFilter(lt, req.labelTypes, req.excludeLabelTypes) {
+			continue
 		}
-		usdByType[lt] += asFloat(r["Usd_Total"])
-		cntByType[lt]++
+		display := lt
+		if display == "" {
+			display = noneLabel
+		}
+		a := byType[display]
+		if a == nil {
+			a = &agg{}
+			byType[display] = a
+			order = append(order, display)
+		}
+		cpUsd := asFloat(r["Usd_Total"])
+		a.usd += cpUsd
+		a.usdIn += ptrOr0(asFloatPtr(r["Usd_In"]))
+		a.usdOut += ptrOr0(asFloatPtr(r["Usd_Out"]))
+		a.cnt++
+		a.tops = append(a.tops, cpBrief{Counterparty: chainexec.AsStr(r["Counterparty"]), Usd: cpUsd})
 	}
-	var base float64
-	var sumReturned float64
-	if tot := chainexec.TotalsOf(doc); tot != nil {
+
+	tot := chainexec.TotalsOf(doc)
+	if tot != nil {
+		res.SelfTransfers = chainexec.AsInt(tot["Self_Transfers"])
+	}
+	// Share base. Unfiltered: the WITH TOTALS grand total (in/out/combined), with a
+	// (below_cutoff) row for the counterparties past the top-K so shares sum to 100%.
+	// Filtered: the sum over the matching types only (shown types sum to 100% of the
+	// filtered population) and NO (below_cutoff) row — the below-cutoff types are unknown.
+	var base, baseIn, baseOut float64
+	if filtered {
+		for _, a := range byType {
+			base += a.usd
+			baseIn += a.usdIn
+			baseOut += a.usdOut
+		}
+	} else if tot != nil {
 		base = asFloat(tot["Usd_Total"])
+		baseIn = ptrOr0(asFloatPtr(tot["Usd_In"]))
+		baseOut = ptrOr0(asFloatPtr(tot["Usd_Out"]))
 	}
-	for _, v := range usdByType {
-		sumReturned += v
+	res.ShareBaseUsd, res.ShareBaseUsdIn, res.ShareBaseUsdOut = base, baseIn, baseOut
+
+	var retUsd, retIn, retOut float64
+	for _, a := range byType {
+		retUsd += a.usd
+		retIn += a.usdIn
+		retOut += a.usdOut
 	}
-	// The remainder: every counterparty past the top-K, as one bucket.
-	below := nonNeg(base - sumReturned)
-	res.ShareBaseUsd = base
-	for lt, usd := range usdByType {
-		res.Types = append(res.Types, typeRow{LabelType: lt, Counterparties: cntByType[lt], Usd: usd, Share: shareOf(usd, base)})
+	for _, lt := range order {
+		a := byType[lt]
+		sort.Slice(a.tops, func(i, j int) bool { return a.tops[i].Usd > a.tops[j].Usd })
+		top := a.tops
+		if len(top) > 3 {
+			top = top[:3]
+		}
+		res.Types = append(res.Types, typeRow{
+			LabelType:         lt,
+			Counterparties:    a.cnt,
+			Usd:               a.usd,
+			Share:             shareOf(a.usd, base),
+			ShareIn:           shareOfP(a.usdIn, baseIn),
+			ShareOut:          shareOfP(a.usdOut, baseOut),
+			TopCounterparties: append([]cpBrief(nil), top...),
+		})
 	}
-	if below > 0 {
-		res.Types = append(res.Types, typeRow{LabelType: belowCutoffLabel, Usd: below, Share: shareOf(below, base)})
+	if !filtered {
+		if below := nonNeg(base - retUsd); below > 0 {
+			res.Types = append(res.Types, typeRow{
+				LabelType: belowCutoffLabel,
+				Usd:       below,
+				Share:     shareOf(below, base),
+				ShareIn:   shareOfP(nonNeg(baseIn-retIn), baseIn),
+				ShareOut:  shareOfP(nonNeg(baseOut-retOut), baseOut),
+			})
+		}
 	}
 	sort.Slice(res.Types, func(i, j int) bool { return res.Types[i].Usd > res.Types[j].Usd })
 	return res
@@ -299,20 +548,50 @@ func shareOf(a, base float64) float64 {
 	return a / base
 }
 
+// shareOfP is shareOf for a side whose base can be null (no priced transfer on that
+// side): null, not 0, so a reader does not read "0% in" where there simply was no
+// priced inflow — the null-not-0 rule the rest of the tool follows.
+func shareOfP(a, base float64) *float64 {
+	if base <= 0 || math.IsNaN(base) {
+		return nil
+	}
+	s := a / base
+	return &s
+}
+
+// pctP renders a *share as a percentage, "" when null.
+func pctP(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p*100, 'f', 2, 64)
+}
+
 func (r typeResult) markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Counterparties by label type — %s\n\n", r.Chain)
 	fmt.Fprintf(&b, "Window %s → %s UTC. Addresses: %d requested, %d used.\n", r.Window.AfterTime, r.Window.BeforeTime, r.AddressesRequested, r.AddressesUsed)
-	fmt.Fprintf(&b, "Share base (total flow in + out): $%s.\n", usd(r.ShareBaseUsd))
+	fmt.Fprintf(&b, "Share base (total flow in + out): $%s (in $%s, out $%s).\n", usd(r.ShareBaseUsd), usd(r.ShareBaseUsdIn), usd(r.ShareBaseUsdOut))
+	if r.SelfTransfers > 0 {
+		fmt.Fprintf(&b, "Self-transfers (intra-set, excluded): %d.\n", r.SelfTransfers)
+	}
 	if r.Partial {
 		b.WriteString("Partial: the call stopped on its budget before it was complete; shares are over what was read.\n")
 		if r.Hint != "" {
 			fmt.Fprintf(&b, "%s\n", r.Hint)
 		}
 	}
-	b.WriteString("\nlabel_type,counterparties,usd,share_pct\n")
+	b.WriteString("\nlabel_type,counterparties,usd,share_pct,share_in_pct,share_out_pct,top_counterparties\n")
 	for _, ty := range r.Types {
-		fmt.Fprintf(&b, "%s,%d,%s,%.2f\n", ty.LabelType, ty.Counterparties, usd(ty.Usd), ty.Share*100)
+		tops := make([]string, 0, len(ty.TopCounterparties))
+		for _, c := range ty.TopCounterparties {
+			tops = append(tops, c.Counterparty)
+		}
+		fmt.Fprintf(&b, "%s,%d,%s,%.2f,%s,%s,%s\n",
+			ty.LabelType, ty.Counterparties, usd(ty.Usd), ty.Share*100, pctP(ty.ShareIn), pctP(ty.ShareOut), strings.Join(tops, ";"))
+	}
+	if r.PickRule != "" {
+		fmt.Fprintf(&b, "\n%s\n", r.PickRule)
 	}
 	return b.String()
 }

@@ -201,7 +201,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	}
 
 	res := shapeAddress(req, doc)
-	t.attachLabels(&res, byAddr)
+	t.attachLabels(req, &res, byAddr)
 	res.Partial = partial
 	// next_cursor from the LAST SQL ROW of a full page (never the last surfaced
 	// row: a label filter the shaping applies can drop every row of a page, and
@@ -269,6 +269,7 @@ func (t Tool) partialResult(req request, ex *chainexec.Exec, start time.Time) an
 			AddressesUsed:      len(req.addrs),
 			AddressesInvalid:   req.invalid,
 			IncludeInternal:    req.includeInternal,
+			PickRule:           t.lm.PickRule(),
 			Partial:            true,
 			Hint:               partialHint,
 			Cost:               ex.Cost,
@@ -288,6 +289,7 @@ func (t Tool) partialResult(req request, ex *chainexec.Exec, start time.Time) an
 		AddressesInvalid:   req.invalid,
 		IncludeInternal:    req.includeInternal,
 		MinUsd:             req.minUsd,
+		PickRule:           t.lm.PickRule(),
 		Partial:            true,
 		Hint:               partialHint,
 		Cost:               ex.Cost,
@@ -411,6 +413,14 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	req.excludeLabelTypes, err = parseLabelTypes(chainexec.AsStr(p["exclude_label_type"]))
 	if err != nil {
 		return request{}, agentErr("exclude_label_type: %v", err)
+	}
+	// A never-pick type is an attribute, never a primary label, so filtering on it
+	// would match (or exclude) nothing — reject it so the caller is not silently
+	// confused; Pick_Rule names the primary types to filter on.
+	for _, lt := range append(append([]string{}, req.labelTypes...), req.excludeLabelTypes...) {
+		if t.lm.neverPick[lt] {
+			return request{}, agentErr("label type %q is an attribute (never a primary label); filter on a primary type — see Pick_Rule", lt)
+		}
 	}
 
 	req.minUsd = asFloat(p["min_usd"])

@@ -159,8 +159,9 @@ func TestShapeAddressRemainder(t *testing.T) {
 	if res.Totals.Stale != 2 || res.Totals.NoPrice != 4 {
 		t.Errorf("status counters wrong: %+v", res.Totals)
 	}
-	// Markdown renders without panicking and carries the CSV header.
-	if md := res.markdown(); !strings.Contains(md, "counterparty,label,usd_in,usd_out") {
+	// Markdown renders without panicking and carries the CSV header (A3 added
+	// label_status + the unpriced / token_count columns).
+	if md := res.markdown(); !strings.Contains(md, "counterparty,label,label_status,usd_in,usd_out") {
 		t.Error("markdown missing CSV header")
 	}
 }

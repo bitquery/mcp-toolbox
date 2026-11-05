@@ -44,6 +44,32 @@ const (
 	belowCutoffLabel = "(below_cutoff)"
 )
 
+// labelStatus is why a counterparty has, or lacks, a primary label. Today the
+// shaping emits only labeled / unlabeled, from whether the pick returned a type.
+// noCoverage (a chain with no label data at all, e.g. Zcash) and notLookedUp (a
+// hub gate that labels only the top-N) are reserved for the multi-chain label work
+// (A1b); they are declared here so adding them does not touch the call sites.
+type labelStatus string
+
+const (
+	statusLabeled     labelStatus = "labeled"
+	statusUnlabeled   labelStatus = "unlabeled"
+	statusNoCoverage  labelStatus = "no_coverage"   //nolint:unused // reserved for A1b
+	statusNotLookedUp labelStatus = "not_looked_up" //nolint:unused // reserved for A1b
+)
+
+// matchLabelFilter reports whether a picked primary label type passes the caller's
+// label_type / exclude_label_type filters: it must be in include (when include is
+// non-empty) and not in exclude. An unlabeled counterparty (picked == "") fails a
+// non-empty include — it has no primary type to match — but passes an exclude-only
+// filter, since exclude removes named types, not the unlabeled.
+func matchLabelFilter(picked string, include, exclude []string) bool {
+	if len(include) > 0 && !slices.Contains(include, picked) {
+		return false
+	}
+	return !slices.Contains(exclude, picked)
+}
+
 type labelRow struct {
 	Address   string
 	LabelType string
