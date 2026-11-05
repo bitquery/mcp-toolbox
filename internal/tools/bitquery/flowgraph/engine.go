@@ -182,9 +182,11 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	rows := chainexec.RowsOf(doc)
 	addrs := make([]string, 0, len(rows))
 	for _, r := range rows {
-		addrs = append(addrs, strings.ToLower(chainexec.AsStr(r["Counterparty"])))
+		// codec.normalize, never ToLower: a base58 Tron Counterparty is case-sensitive,
+		// and this key must match the labels map built in fetchLabels.
+		addrs = append(addrs, codec.normalize(chainexec.AsStr(r["Counterparty"])))
 	}
-	byAddr, partial, lerr := t.fetchLabels(ctx, ex, req.chain, addrs)
+	byAddr, partial, lerr := t.fetchLabels(ctx, ex, codec, t.labelChainsFor(req.chain), addrs)
 	if lerr != nil {
 		return nil, util.ProcessGeneralError(lerr)
 	}

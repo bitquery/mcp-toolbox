@@ -48,7 +48,7 @@ func TestPick(t *testing.T) {
 	// never-pick types are dropped and dex-router outranks asset-manager/contract in
 	// the priority list. (This is AT3: Label_Type is dex-router, never
 	// high-transacting/signer/deployer.)
-	lt, _, types := m.pick([]labelRow{
+	lt, _, _, types := m.pick([]labelRow{
 		{LabelType: "high-transacting", Value: "x", Source: "some-vendor"},
 		{LabelType: "signer", Value: "y", Source: "some-vendor"},
 		{LabelType: "deployer", Value: "z", Source: "some-vendor"},
@@ -64,7 +64,7 @@ func TestPick(t *testing.T) {
 	}
 
 	// Risk first: a risk type outranks a DeFi type whatever the source.
-	if lt, _, _ := m.pick([]labelRow{
+	if lt, _, _, _ := m.pick([]labelRow{
 		{LabelType: "dex-router", Value: "d", Source: "some-vendor"},
 		{LabelType: "sanctioned-entity", Value: "ofac-123", Source: "ofac"},
 	}); lt != "sanctioned-entity" {
@@ -72,7 +72,7 @@ func TestPick(t *testing.T) {
 	}
 
 	// Within one chosen type, the more-trusted source class wins the value.
-	if _, v, _ := m.pick([]labelRow{
+	if _, v, _, _ := m.pick([]labelRow{
 		{LabelType: "bridge", Value: "vendor-name", Source: "some-vendor"},
 		{LabelType: "bridge", Value: "ofac-name", Source: "ofac"},
 	}); v != "ofac-name" {
@@ -80,7 +80,7 @@ func TestPick(t *testing.T) {
 	}
 
 	// Only never-pick / attribute-only types: no primary, but they still appear in types.
-	lt, _, types = m.pick([]labelRow{
+	lt, _, _, types = m.pick([]labelRow{
 		{LabelType: "high-transacting", Value: "x", Source: "v"},
 		{LabelType: "signer", Value: "y", Source: "v"},
 	})
@@ -92,12 +92,12 @@ func TestPick(t *testing.T) {
 	}
 
 	// No labels: no primary.
-	if lt, _, _ := m.pick(nil); lt != "" {
+	if lt, _, _, _ := m.pick(nil); lt != "" {
 		t.Fatalf("pick(nil) = %q, want empty", lt)
 	}
 
 	// A type in neither priority nor other-order ranks after every priority type.
-	if lt, _, _ := m.pick([]labelRow{
+	if lt, _, _, _ := m.pick([]labelRow{
 		{LabelType: "zebra-type", Value: "z", Source: "v"},
 		{LabelType: "contract", Value: "c", Source: "v"},
 	}); lt != "contract" {

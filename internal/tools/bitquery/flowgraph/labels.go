@@ -72,9 +72,51 @@ func matchLabelFilter(picked string, include, exclude []string) bool {
 
 type labelRow struct {
 	Address   string
+	Chain     string
 	LabelType string
 	Value     string
 	Source    string
+}
+
+// contractLabelTypes are the label types that mark the address as a CONTRACT: the
+// whole DeFi/contracts block of the priority, plus proxy. When an EVM address carries
+// one ON THE TOOL CHAIN, the same 20-byte key on another EVM chain is an unrelated
+// deployment, so its labels must NOT be merged in (labels.md: do not auto-widen
+// contract-type labels across chains). Exchange/service types (cex-*, otc-desk,
+// custodian, …) are deliberately NOT here: those are wallets and SHOULD widen.
+var contractLabelTypes = map[string]bool{
+	"contract": true, "token-contract": true, "dex-router": true, "dex-pool": true,
+	"dex-aggregator": true, "lending-protocol": true, "staking-protocol": true,
+	"derivatives-protocol": true, "yield-aggregator": true, "bridge": true, "proxy": true,
+	"asset-manager": true, "market-maker": true, "service": true, "infrastructure": true,
+}
+
+// restrictForContract narrows an address's cross-chain label rows to the tool chain
+// when the address is a contract ON THE TOOL CHAIN: a different chain's same-key
+// deployment is a different owner, so merging its labels would manufacture a false
+// attribution. A plain wallet (no contract-type label on the tool chain) keeps every
+// chain's labels — one owner spans EVM. A single-chain lookup (every row already on
+// the tool chain) is a no-op. (A contract whose only label is attributed to another
+// chain reads as a wallet here and widens — correct, since that other-chain label is
+// then the address's only one.)
+func restrictForContract(rows []labelRow, toolChain string) []labelRow {
+	contract := false
+	for _, r := range rows {
+		if r.Chain == toolChain && contractLabelTypes[r.LabelType] {
+			contract = true
+			break
+		}
+	}
+	if !contract {
+		return rows
+	}
+	out := make([]labelRow, 0, len(rows))
+	for _, r := range rows {
+		if r.Chain == toolChain {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // SourceClassRule classes a label source; the first match wins.
@@ -187,7 +229,7 @@ func (m *labelMethod) typeLess(a, b string) bool {
 // ("", "", types) when nothing is pickable (no labels, or only never-pick /
 // attribute-only types); types is every distinct label type present, sorted, for
 // the Labels field.
-func (m *labelMethod) pick(rows []labelRow) (labelType, value string, types []string) {
+func (m *labelMethod) pick(rows []labelRow) (labelType, value, chain string, types []string) {
 	typeSeen := map[string]bool{}
 	candByType := map[string][]labelRow{}
 	var candTypes []string
@@ -206,7 +248,7 @@ func (m *labelMethod) pick(rows []labelRow) (labelType, value string, types []st
 	}
 	sort.Strings(types)
 	if len(candTypes) == 0 {
-		return "", "", types
+		return "", "", "", types
 	}
 	// Choose the type highest in the priority order (then other-order, then
 	// alphabetical among unknown types).
@@ -222,6 +264,7 @@ func (m *labelMethod) pick(rows []labelRow) (labelType, value string, types []st
 	// rows (one row per source).
 	type valueAgg struct {
 		value     string
+		chain     string // the alphabetically-lowest chain carrying this value (the final tiebreak, and the reported Label chain)
 		bestClass int
 		sources   map[string]bool
 	}
@@ -230,9 +273,12 @@ func (m *labelMethod) pick(rows []labelRow) (labelType, value string, types []st
 	for _, r := range candByType[chosen] {
 		a := aggs[r.Value]
 		if a == nil {
-			a = &valueAgg{value: r.Value, bestClass: len(m.classRank) + 1, sources: map[string]bool{}}
+			a = &valueAgg{value: r.Value, chain: r.Chain, bestClass: len(m.classRank) + 1, sources: map[string]bool{}}
 			aggs[r.Value] = a
 			order = append(order, r.Value)
+		}
+		if r.Chain != "" && (a.chain == "" || r.Chain < a.chain) {
+			a.chain = r.Chain
 		}
 		if cr := m.classRankOf(m.sourceClass(r.Source)); cr < a.bestClass {
 			a.bestClass = cr
@@ -255,7 +301,7 @@ func (m *labelMethod) pick(rows []labelRow) (labelType, value string, types []st
 			best = a
 		}
 	}
-	return chosen, best.value, types
+	return chosen, best.value, best.chain, types
 }
 
 // PickRule renders the label-pick rule as text, for a tool to return verbatim on
@@ -266,6 +312,7 @@ func (m *labelMethod) PickRule() string {
 	b.WriteString("Label_Type pick: of a counterparty's labels, the never-picked types are dropped, ")
 	b.WriteString("the primary is the remaining type earliest in PRIORITY (then OTHER, then alphabetical), ")
 	b.WriteString("and within that type the most-trusted source class wins, then the most sources, then the lowest value.")
+	b.WriteString(" On an EVM chain the labels of every EVM chain the address is known on compete together under this one rule.")
 	b.WriteString("\nPRIORITY: " + strings.Join(m.priority, ", "))
 	if len(m.otherOrder) > 0 {
 		b.WriteString("\nOTHER (descending address count): " + strings.Join(m.otherOrder, ", "))
@@ -281,21 +328,32 @@ func (m *labelMethod) PickRule() string {
 	return b.String()
 }
 
-// labelsStmt reads the label rows of a batch of validated addresses on one
-// chain. The addresses are 0x-hex (validated by the codec and lower-cased), so
-// each is quoted as a literal; directory.labels stores EVM addresses in that
-// form. The read is capped and billed through the labels source.
-func labelsStmt(chain string, addrs []string, maxSeconds int) string {
-	q := make([]string, len(addrs))
-	for i, a := range addrs {
-		q[i] = "'" + a + "'"
+// labelsStmt reads the label rows of a batch of validated addresses across one or
+// more directory chains. An EVM tool-chain looks the address up over the whole EVM
+// directory list (a label for one owner can sit under any EVM chain); a single-chain
+// tool-chain (tron, …) looks up its one chain. chain is selected and grouped so each
+// row carries it: the shaping restricts a CONTRACT address to its tool chain (a
+// same-key deployment on another chain is a different owner), and the pick reports
+// which chain its label came from. The pick's distinct-source count stays by source
+// name, so the same (type,value,source) on several chains is not over-counted. Each
+// address is already in the chain's directory form (0x-hex lower for EVM, base58 for
+// Tron — codec.normalize, never ToLower) and quoted as a literal; chain names are
+// cfg-validated (resolveLabelChains). Capped and billed through the labels source.
+func labelsStmt(chains, addrs []string, maxSeconds int) string {
+	qc := make([]string, len(chains))
+	for i, c := range chains {
+		qc[i] = "'" + c + "'"
 	}
-	return fmt.Sprintf(`SELECT address, label_type, label_value, source
+	qa := make([]string, len(addrs))
+	for i, a := range addrs {
+		qa[i] = "'" + a + "'"
+	}
+	return fmt.Sprintf(`SELECT address, chain, label_type, label_value, source
 FROM directory.labels
-WHERE chain = '%s' AND address IN (%s)
-GROUP BY address, label_type, label_value, source
+WHERE chain IN (%s) AND address IN (%s)
+GROUP BY address, chain, label_type, label_value, source
 SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d`,
-		chain, strings.Join(q, ", "), labelMaxRows, maxSeconds)
+		strings.Join(qc, ", "), strings.Join(qa, ", "), labelMaxRows, maxSeconds)
 }
 
 // fetchLabels reads the labels of the counterparties, in batches, each counted
@@ -303,14 +361,14 @@ SETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time
 // block), so a label statement adds a cost line with no rows/bytes. A batch that
 // cannot start in the time left ends the fetch and the labels gathered so far
 // are used (the call is marked partial by the caller).
-func (t Tool) fetchLabels(ctx context.Context, ex *chainexec.Exec, chain string, addrs []string) (map[string][]labelRow, bool, error) {
+func (t Tool) fetchLabels(ctx context.Context, ex *chainexec.Exec, codec chainCodec, chains, addrs []string) (map[string][]labelRow, bool, error) {
 	out := map[string][]labelRow{}
 	for i := 0; i < len(addrs); i += labelBatch {
 		batch := addrs[i:min(i+labelBatch, len(addrs))]
 		if err := ex.MayStart(ctx, "labels"); err != nil {
 			return out, true, nil // out of time: partial, not an error
 		}
-		res, err := t.labels.RunSQL(ctx, labelsStmt(chain, batch, ex.Secs(ctx)), nil)
+		res, err := t.labels.RunSQL(ctx, labelsStmt(chains, batch, ex.Secs(ctx)), nil)
 		ex.Cost.Statements++
 		ex.Cost.Detail = append(ex.Cost.Detail, chainexec.StatementCost{Name: "labels"})
 		if err != nil {
@@ -322,9 +380,13 @@ func (t Tool) fetchLabels(ctx context.Context, ex *chainexec.Exec, chain string,
 			if !ok {
 				continue
 			}
-			a := strings.ToLower(chainexec.AsStr(r["address"]))
+			// Key by the chain's directory form (codec.normalize: identity on Tron,
+			// lower on EVM) so it matches the counterparty lookup in attachLabels /
+			// shapeLabelType; a ToLower here corrupts a base58 Tron address.
+			a := codec.normalize(chainexec.AsStr(r["address"]))
 			out[a] = append(out[a], labelRow{
 				Address:   a,
+				Chain:     chainexec.AsStr(r["chain"]),
 				LabelType: chainexec.AsStr(r["label_type"]),
 				Value:     chainexec.AsStr(r["label_value"]),
 				Source:    chainexec.AsStr(r["source"]),

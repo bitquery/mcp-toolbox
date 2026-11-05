@@ -29,6 +29,8 @@ package flowgraph
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
 	"text/template"
 
 	yaml "github.com/goccy/go-yaml"
@@ -80,6 +82,11 @@ type Config struct {
 	NeverPick    []string               `yaml:"neverPick"`
 	Priority     []string               `yaml:"labelPriority"`
 	OtherOrder   []string               `yaml:"labelOtherOrder"`
+	// LabelChains maps a tool chain to the directory.labels chain name(s) looked up
+	// for it: an EVM tool-chain lists the whole EVM directory family (one owner's
+	// label can sit under any EVM chain), a single-chain tool-chain lists its one
+	// slug. A statements chain absent here falls back to looking up its own name.
+	LabelChains map[string][]string `yaml:"labelChains"`
 	Parameters   parameters.Parameters  `yaml:"parameters"`
 	Annotations  *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
@@ -129,6 +136,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: %w", cfg.Name, err)
 	}
+	labelChains, err := resolveLabelChains(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q: %w", cfg.Name, err)
+	}
 	// The default source must be one of the chain sources, as the risk report
 	// requires: ValidateSource then confirms the resolved one is an http source.
 	foundSource := false
@@ -168,9 +179,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
 			allParameters,
 		),
-		stmts:  stmts,
-		budget: cfg.Budget.withDefaults(),
-		lm:     lm,
+		stmts:       stmts,
+		budget:      cfg.Budget.withDefaults(),
+		lm:          lm,
+		labelChains: labelChains,
 	}
 	// The sources come from the server at start-up. Offline flows (skills
 	// generation) initialize tools without them and never invoke one; a call is
@@ -243,6 +255,41 @@ type Tool struct {
 	lm     *labelMethod
 	chains map[string]chainexec.HTTPSource
 	labels sqlSource
+	// labelChains maps a tool chain to the directory.labels chain name(s) looked up
+	// for it (resolved at load, with a [chain] fallback); labelChainsFor reads it.
+	labelChains map[string][]string
+}
+
+// labelChainsFor is the directory.labels chain list looked up for a tool chain:
+// the configured list, or the chain's own name when none is configured.
+func (t Tool) labelChainsFor(chain string) []string {
+	if cs := t.labelChains[chain]; len(cs) > 0 {
+		return cs
+	}
+	return []string{chain}
+}
+
+var labelChainNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// resolveLabelChains builds, for every chain that has a statement, the directory
+// chain list to look its counterparties up on: cfg.LabelChains[chain] when set,
+// else [chain]. Every directory chain name is validated (it reaches a chain IN
+// literal), so a malformed name stops the cfg from loading rather than a call.
+func resolveLabelChains(cfg Config) (map[string][]string, error) {
+	out := make(map[string][]string, len(cfg.Statements))
+	for chain := range cfg.Statements {
+		list := cfg.LabelChains[chain]
+		if len(list) == 0 {
+			list = []string{chain}
+		}
+		for _, dc := range list {
+			if !labelChainNameRe.MatchString(dc) {
+				return nil, fmt.Errorf("labelChains[%s]: %q is not a valid directory chain name", chain, dc)
+			}
+		}
+		out[chain] = slices.Clone(list)
+	}
+	return out, nil
 }
 
 func (t Tool) GetSourceName() string {

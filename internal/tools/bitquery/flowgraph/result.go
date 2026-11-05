@@ -51,6 +51,7 @@ type cpRow struct {
 	// LabelValue its value; Labels every distinct label type it carries.
 	Label       string      `json:"label,omitempty"`
 	LabelValue  string      `json:"label_value,omitempty"`
+	LabelChain  string      `json:"label_chain,omitempty"`
 	Labels      []string    `json:"labels,omitempty"`
 	LabelStatus labelStatus `json:"label_status"`
 	// TokenCount is the number of distinct tokens moved with the counterparty;
@@ -328,10 +329,12 @@ func (r result) markdown() string {
 // over the returned page. Pick_Rule is recorded for the call.
 func (t Tool) attachLabels(req request, r *result, byAddr map[string][]labelRow) {
 	r.PickRule = t.lm.PickRule()
+	norm := normalizerFor(req.chain)
+	toolChain := t.labelChainsFor(req.chain)[0]
 	for i := range r.Counterparties {
 		c := &r.Counterparties[i]
-		lt, lv, types := t.lm.pick(byAddr[strings.ToLower(c.Counterparty)])
-		c.Label, c.LabelValue, c.Labels = lt, lv, types
+		lt, lv, lc, types := t.lm.pick(restrictForContract(byAddr[norm(c.Counterparty)], toolChain))
+		c.Label, c.LabelValue, c.LabelChain, c.Labels = lt, lv, lc, types
 		if lt != "" {
 			c.LabelStatus = statusLabeled
 		} else {
@@ -455,9 +458,11 @@ func (t Tool) shapeLabelType(req request, doc map[string]any, byAddr map[string]
 	}
 	byType := map[string]*agg{}
 	var order []string
+	norm := normalizerFor(req.chain)
+	toolChain := t.labelChainsFor(req.chain)[0]
 	for _, r := range chainexec.RowsOf(doc) {
-		addr := strings.ToLower(chainexec.AsStr(r["Counterparty"]))
-		lt, _, _ := t.lm.pick(byAddr[addr])
+		addr := norm(chainexec.AsStr(r["Counterparty"]))
+		lt, _, _, _ := t.lm.pick(restrictForContract(byAddr[addr], toolChain))
 		// The filter is on the picked primary type; (none) is unlabeled, so it can
 		// never be in an include list and is not in exclude.
 		if filtered && !matchLabelFilter(lt, req.labelTypes, req.excludeLabelTypes) {

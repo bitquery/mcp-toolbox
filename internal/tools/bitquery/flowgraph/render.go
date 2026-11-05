@@ -120,6 +120,17 @@ var codecs = map[string]chainCodec{}
 
 func registerCodec(c chainCodec) { codecs[c.chain()] = c }
 
+// normalizerFor is a chain's address normalizer: the codec's (identity on Tron,
+// lower on EVM) when the chain has a codec, else ToLower. Production chains always
+// have a codec (parse validates it); the fallback is for offline/test paths that
+// shape a result for a chain the registry does not hold.
+func normalizerFor(chain string) func(string) string {
+	if c, ok := codecFor(chain); ok {
+		return c.normalize
+	}
+	return strings.ToLower
+}
+
 // codecFor is the codec of a chain, or false when the chain has none (so a
 // statements block for an unsupported chain is refused at load).
 func codecFor(chain string) (chainCodec, bool) {
