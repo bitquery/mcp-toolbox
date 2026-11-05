@@ -212,7 +212,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 			RowNull: int(chainexec.AsInt(last["row_null"])),
 			UsdRank: asFloat(last["Usd_Rank"]),
 			Tsum:    chainexec.AsInt(last["Transfers_In"]) + chainexec.AsInt(last["Transfers_Out"]),
-			Addr:    chainexec.AsStr(last["Counterparty"]),
+			Addr:    codec.normalize(chainexec.AsStr(last["Counterparty"])),
 		}, bindHash(req))
 	}
 	res.Cost = ex.Cost
@@ -379,7 +379,15 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	req.wStart, req.wEnd = after, before
 
 	if v, ok := p["include_internal"]; ok && v != nil {
-		req.includeInternal = clampBit(chainexec.AsInt(v))
+		bit := clampBit(chainexec.AsInt(v))
+		// include_internal is EVM-only (there is no Transfer_Type to gate a nested
+		// call on elsewhere); reject the meaningful value on a chain that lacks it,
+		// keyed on the codec, not a chain-name compare. include_internal=0 is a no-op
+		// and allowed so a cross-chain caller need not special-case it.
+		if bit == 1 && !codec.supportsIncludeInternal() {
+			return request{}, agentErr("include_internal is only supported on EVM chains")
+		}
+		req.includeInternal = bit
 	} else {
 		req.includeInternal = defaultIncludeInternal(chain)
 	}
@@ -437,7 +445,7 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		if req.groupBy != "address" {
 			return request{}, agentErr("cursor is only supported for group_by=address")
 		}
-		k, derr := decodeCursor(req.cursor, bindHash(req))
+		k, derr := decodeCursor(req.cursor, bindHash(req), codec)
 		if derr != nil {
 			return request{}, agentErr("cursor: %v", derr)
 		}

@@ -105,6 +105,15 @@ type chainCodec interface {
 	// against each transfer's token column; ("", false) when the id is not valid
 	// for the chain. For EVM it is the 40-char lower-hex contract, no 0x.
 	tokenKey(addr string) (string, bool)
+	// outputAddr reports whether s is a valid Counterparty OUTPUT string of this
+	// chain — the form the statement emits and the ORDER BY sorts on (EVM:
+	// 0x + 40 lower-hex; Tron: the base58 form). A keyset cursor's address is
+	// validated with it, so a cursor cannot page a chain whose address form it
+	// does not match.
+	outputAddr(s string) bool
+	// supportsIncludeInternal reports whether include_internal applies on this
+	// chain (EVM only; Tron has no Transfer_Type to gate a nested call on).
+	supportsIncludeInternal() bool
 }
 
 var codecs = map[string]chainCodec{}
@@ -154,6 +163,13 @@ func (evmCodec) tokenKey(a string) (string, bool) {
 	}
 	return strings.ToLower(strings.TrimPrefix(strings.ToLower(a), "0x")), true
 }
+
+// evmOutRe is the Counterparty output form: concat('0x', lower(hex(...))), so
+// lower-case only (evmAddrRe, used for input, also accepts upper-case).
+var evmOutRe = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
+
+func (evmCodec) outputAddr(s string) bool      { return evmOutRe.MatchString(s) }
+func (evmCodec) supportsIncludeInternal() bool { return true }
 
 // The EVM chains this kind can serve. Each shares evmCodec; the per-chain
 // transfer source and statement come from cfg.

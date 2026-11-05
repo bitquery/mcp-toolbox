@@ -37,7 +37,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,7 +44,9 @@ import (
 
 // cursorVersion is bumped if the encoded shape or the total order changes, so a
 // cursor minted by an older build is rejected rather than resumed incorrectly.
-const cursorVersion = 1
+// v2: the address is validated against the chain's codec (base58 on Tron), not a
+// hardcoded 0x-hex form.
+const cursorVersion = 2
 
 // cursorKey is the last returned counterparty's position in the total order.
 // RowNull is 0 (priced) or 1 (unpriced); UsdRank is the cent-quantized ranking
@@ -66,8 +67,6 @@ type cursorEnvelope struct {
 	Key  cursorKey `json:"k"`
 }
 
-var cursorAddrRe = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
-
 // encodeCursor mints next_cursor for a page's last row, bound to the query.
 func encodeCursor(k cursorKey, bind string) string {
 	b, _ := json.Marshal(cursorEnvelope{V: cursorVersion, Hash: bind, Key: k})
@@ -80,7 +79,7 @@ func encodeCursor(k cursorKey, bind string) string {
 // ranking key and transfer count, the address in the exact Counterparty output
 // form) so the render builds the predicate from typed, checked literals — never
 // from caller text.
-func decodeCursor(s, bind string) (cursorKey, error) {
+func decodeCursor(s, bind string, codec chainCodec) (cursorKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
 	if err != nil {
 		return cursorKey{}, fmt.Errorf("it is malformed")
@@ -105,7 +104,7 @@ func decodeCursor(s, bind string) (cursorKey, error) {
 	if k.Tsum < 0 {
 		return cursorKey{}, fmt.Errorf("it is malformed")
 	}
-	if !cursorAddrRe.MatchString(k.Addr) {
+	if !codec.outputAddr(k.Addr) {
 		return cursorKey{}, fmt.Errorf("it is malformed")
 	}
 	return k, nil

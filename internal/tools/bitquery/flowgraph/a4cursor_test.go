@@ -48,7 +48,7 @@ func TestCursorRoundTrip(t *testing.T) {
 	if strings.ContainsAny(tok, "+/=") {
 		t.Fatalf("cursor is not base64url-clean: %q", tok)
 	}
-	got, err := decodeCursor(tok, bind)
+	got, err := decodeCursor(tok, bind, evmCodec{"ethereum"})
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCursorRejects(t *testing.T) {
 	}
 	for name, mk := range cases {
 		tok, b := mk()
-		if _, err := decodeCursor(tok, b); err == nil {
+		if _, err := decodeCursor(tok, b, evmCodec{"ethereum"}); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
