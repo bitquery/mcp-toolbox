@@ -24,6 +24,7 @@ package flowgraph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -94,6 +95,11 @@ type request struct {
 	labelTypes        []string
 	excludeLabelTypes []string
 	format            string
+	// cursor is the raw page token as given; cur is it decoded and validated
+	// against this request's bind hash (nil = the first page). group_by=address
+	// only.
+	cursor string
+	cur    *cursorKey
 }
 
 // keepSender / keepReceiver turn the direction into the two statement arms.
@@ -114,7 +120,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	if err != nil {
 		return nil, agentErr("%v", err)
 	}
-	statement, err := render(t.stmts[req.chain], stmtVars{
+	vars := stmtVars{
 		SetLiteral:       setLit,
 		WStart:           sqlTime(req.wStart),
 		WEnd:             sqlTime(req.wEnd),
@@ -126,7 +132,15 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		MultiAddr:        len(req.addrs) > 1,
 		TopK:             req.limit,
 		MinUsd:           formatFloat(req.minUsd),
-	})
+	}
+	if req.cur != nil {
+		vars.Cursor = true
+		vars.CurRowNull = req.cur.RowNull
+		vars.CurUsd = formatFloat(req.cur.UsdRank)
+		vars.CurTsum = req.cur.Tsum
+		vars.CurAddr = req.cur.Addr
+	}
+	statement, err := render(t.stmts[req.chain], vars)
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
 	}
@@ -151,6 +165,14 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	statement += settingsClause(maxRows, ex.Secs(ctx))
 	doc, qerr := ex.QueryDoc(ctx, "counterparties", headerSender, statement)
 	if qerr != nil {
+		// A stop on the budget (the call's deadline, or a rows/bytes/memory
+		// overflow) is not a failure: return the finished work with Partial=1, a
+		// narrowing hint, and NO cursor (AT11). A killed query returns an error,
+		// not partial rows, so this page is summary-only. Any other error is a
+		// real failure and propagates unchanged.
+		if isStopError(ctx, qerr) {
+			return t.partialResult(req, ex, start), nil
+		}
 		return nil, util.ProcessGeneralError(qerr)
 	}
 
@@ -181,12 +203,100 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	res := shapeAddress(req, doc)
 	t.attachLabels(&res, byAddr)
 	res.Partial = partial
+	// next_cursor from the LAST SQL ROW of a full page (never the last surfaced
+	// row: a label filter the shaping applies can drop every row of a page, and
+	// the walk must still advance). A short page is the last page — no cursor.
+	if len(rows) == req.limit && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		res.NextCursor = encodeCursor(cursorKey{
+			RowNull: int(chainexec.AsInt(last["row_null"])),
+			UsdRank: asFloat(last["Usd_Rank"]),
+			Tsum:    chainexec.AsInt(last["Transfers_In"]) + chainexec.AsInt(last["Transfers_Out"]),
+			Addr:    chainexec.AsStr(last["Counterparty"]),
+		}, bindHash(req))
+	}
 	res.Cost = ex.Cost
 	res.TimingMS = time.Since(start).Milliseconds()
 	if req.format == "json" {
 		return res, nil
 	}
 	return tools.TextResult{Text: res.markdown()}, nil
+}
+
+// isStopError is true for an error that means the call ran out of its budget —
+// the context deadline, or a ClickHouse rows/bytes/time/memory overflow — as
+// opposed to a real failure. It is deliberately conservative: an error it does
+// not recognise propagates as a failure (today's behaviour), so a stop is only
+// ever turned into a Partial page when it is clearly one. The exact gateway
+// wording for a budget stop is confirmed on a live hub, not offline.
+func isStopError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+		return true
+	}
+	s := err.Error()
+	// CH error codes: 159 TIMEOUT_EXCEEDED, 160 TOO_SLOW, 158 TOO_MANY_ROWS,
+	// 307 TOO_MANY_BYTES, 241 MEMORY_LIMIT_EXCEEDED.
+	for _, needle := range []string{
+		"Code: 159", "Code: 160", "Code: 158", "Code: 307", "Code: 241",
+		"TIMEOUT_EXCEEDED", "TOO_SLOW", "TOO_MANY_ROWS", "TOO_MANY_BYTES",
+		"MEMORY_LIMIT_EXCEEDED", "max_execution_time", "max_rows_to_read",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// partialHint is the narrowing suggestion on a budget stop. It names no cluster
+// internals (it is shown to the end user), only the knobs that shrink the read.
+const partialHint = "Stopped on the budget before finishing. Narrow it: a shorter window (after_time / before_time), a single token, or a higher min_usd, then try again."
+
+// partialResult is the summary-only answer on a budget stop: the echoed request,
+// Partial=1, the hint, no counterparties and no cursor, with the cost that was
+// read before the stop. Format- and group_by-aware, like the success path.
+func (t Tool) partialResult(req request, ex *chainexec.Exec, start time.Time) any {
+	window := windowOut{AfterTime: sqlTimePlain(req.wStart), BeforeTime: sqlTimePlain(req.wEnd)}
+	if req.groupBy == "label_type" {
+		tr := typeResult{
+			Chain:              req.chain,
+			GroupBy:            "label_type",
+			Window:             window,
+			AddressesRequested: req.requested,
+			AddressesUsed:      len(req.addrs),
+			AddressesInvalid:   req.invalid,
+			IncludeInternal:    req.includeInternal,
+			Partial:            true,
+			Hint:               partialHint,
+			Cost:               ex.Cost,
+			TimingMS:           time.Since(start).Milliseconds(),
+		}
+		if req.format == "json" {
+			return tr
+		}
+		return tools.TextResult{Text: tr.markdown()}
+	}
+	res := result{
+		Chain:              req.chain,
+		GroupBy:            "address",
+		Window:             window,
+		AddressesRequested: req.requested,
+		AddressesUsed:      len(req.addrs),
+		AddressesInvalid:   req.invalid,
+		IncludeInternal:    req.includeInternal,
+		MinUsd:             req.minUsd,
+		Partial:            true,
+		Hint:               partialHint,
+		Cost:               ex.Cost,
+		TimingMS:           time.Since(start).Milliseconds(),
+	}
+	if req.format == "json" {
+		return res
+	}
+	return tools.TextResult{Text: res.markdown()}
 }
 
 func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
@@ -317,6 +427,21 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	}
 	if req.format != "markdown" && req.format != "json" {
 		return request{}, agentErr("format must be markdown or json")
+	}
+
+	// The cursor decodes against this request's bind hash, so it must come last,
+	// after the window and every filter are set. group_by=label_type is top-K +
+	// below_cutoff with no deep paging, so a cursor there is refused.
+	req.cursor = strings.TrimSpace(chainexec.AsStr(p["cursor"]))
+	if req.cursor != "" {
+		if req.groupBy != "address" {
+			return request{}, agentErr("cursor is only supported for group_by=address")
+		}
+		k, derr := decodeCursor(req.cursor, bindHash(req))
+		if derr != nil {
+			return request{}, agentErr("cursor: %v", derr)
+		}
+		req.cur = &k
 	}
 	return req, nil
 }

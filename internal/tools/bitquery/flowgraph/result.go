@@ -88,8 +88,17 @@ type result struct {
 	BelowCutoff        remainder         `json:"below_cutoff"`
 	Totals             totalsOut         `json:"totals"`
 	Partial            bool              `json:"partial"`
-	Cost               chainexec.CostOut `json:"cost"`
-	TimingMS           int64             `json:"timing_ms"`
+	// NextCursor is set when the returned page filled the limit, so more
+	// counterparties follow: pass it back as cursor (with the same addresses,
+	// window and filters) for the next page. Empty = the last page, or a Partial
+	// stop (which carries no cursor).
+	NextCursor string `json:"next_cursor,omitempty"`
+	// Hint is a narrowing suggestion carried on a Partial stop (shorten the
+	// window, pin a token, raise min_usd), so a call that always stops is still
+	// actionable.
+	Hint     string            `json:"hint,omitempty"`
+	Cost     chainexec.CostOut `json:"cost"`
+	TimingMS int64             `json:"timing_ms"`
 }
 
 // shapeAddress turns one statement's document into the result: the returned
@@ -178,6 +187,12 @@ func (r result) markdown() string {
 		r.Totals.NoPrice, r.Totals.Suspect, r.Totals.Stale)
 	if r.Partial {
 		b.WriteString("Partial: the call stopped on its budget before it was complete.\n")
+		if r.Hint != "" {
+			fmt.Fprintf(&b, "%s\n", r.Hint)
+		}
+	}
+	if r.NextCursor != "" {
+		fmt.Fprintf(&b, "More counterparties follow — pass cursor=%s with the same addresses, window and filters for the next page.\n", r.NextCursor)
 	}
 	b.WriteString("\ncounterparty,label,usd_in,usd_out,transfers_in,transfers_out,first_seen,last_seen\n")
 	n := len(r.Counterparties)
@@ -224,6 +239,7 @@ type typeResult struct {
 	ShareBaseUsd       float64           `json:"share_base_usd"`
 	Types              []typeRow         `json:"types"`
 	Partial            bool              `json:"partial"`
+	Hint               string            `json:"hint,omitempty"`
 	Cost               chainexec.CostOut `json:"cost"`
 	TimingMS           int64             `json:"timing_ms"`
 }
@@ -289,7 +305,10 @@ func (r typeResult) markdown() string {
 	fmt.Fprintf(&b, "Window %s → %s UTC. Addresses: %d requested, %d used.\n", r.Window.AfterTime, r.Window.BeforeTime, r.AddressesRequested, r.AddressesUsed)
 	fmt.Fprintf(&b, "Share base (total flow in + out): $%s.\n", usd(r.ShareBaseUsd))
 	if r.Partial {
-		b.WriteString("Partial: the labels were not all read before the budget; shares are over what was.\n")
+		b.WriteString("Partial: the call stopped on its budget before it was complete; shares are over what was read.\n")
+		if r.Hint != "" {
+			fmt.Fprintf(&b, "%s\n", r.Hint)
+		}
 	}
 	b.WriteString("\nlabel_type,counterparties,usd,share_pct\n")
 	for _, ty := range r.Types {

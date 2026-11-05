@@ -65,6 +65,19 @@ type stmtVars struct {
 	TopK int
 	// MinUsd is an optional USD floor as a decimal literal ("0" = off).
 	MinUsd string
+	// Cursor is true on a page past the first: the statement then adds a keyset
+	// HAVING predicate that keeps only the counterparties strictly after the last
+	// returned one, in the same total order the ORDER BY sorts by. The four Cur*
+	// fields are that last row's position, built from a validated cursor (see
+	// cursor.go). CurUsd and CurTsum are the positive magnitudes; the statement
+	// negates them, so the DESC ranking columns compare as a single ascending
+	// tuple. CurAddr is the Counterparty output string, validated to 0x + 40
+	// lower-hex, so it is safe inside the single-quoted literal.
+	Cursor     bool
+	CurRowNull int
+	CurUsd     string
+	CurTsum    int64
+	CurAddr    string
 }
 
 // render executes a parsed statement template with the built variables. A
