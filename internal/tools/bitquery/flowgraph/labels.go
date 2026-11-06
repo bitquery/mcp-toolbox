@@ -44,19 +44,40 @@ const (
 	belowCutoffLabel = "(below_cutoff)"
 )
 
-// labelStatus is why a counterparty has, or lacks, a primary label. Today the
-// shaping emits only labeled / unlabeled, from whether the pick returned a type.
-// noCoverage (a chain with no label data at all, e.g. Zcash) and notLookedUp (a
-// hub gate that labels only the top-N) are reserved for the multi-chain label work
-// (A1b); they are declared here so adding them does not touch the call sites.
+// labelStatus is why a counterparty has, or lacks, a primary label:
+//   - labeled    — a primary label type was picked;
+//   - unlabeled  — the counterparty carries label rows, but only never-pick
+//     (attribute) types, so none is a primary;
+//   - none       — the directory returned no label row at all for it, on a chain
+//     the directory DOES cover (so the absence is informative);
+//   - no_coverage — the whole chain has no label data (cfg noCoverageChains, e.g.
+//     dash/arc); the labels statement is skipped and the absence says nothing.
+//
+// notLookedUp (a hub gate that labels only the top-N) is reserved for later work.
 type labelStatus string
 
 const (
 	statusLabeled     labelStatus = "labeled"
 	statusUnlabeled   labelStatus = "unlabeled"
-	statusNoCoverage  labelStatus = "no_coverage"   //nolint:unused // reserved for A1b
-	statusNotLookedUp labelStatus = "not_looked_up" //nolint:unused // reserved for A1b
+	statusNone        labelStatus = "none"
+	statusNoCoverage  labelStatus = "no_coverage"
+	statusNotLookedUp labelStatus = "not_looked_up" //nolint:unused // reserved for a hub top-N gate
 )
+
+// pickStatus is the Label_Status for a covered chain from the pick result: labeled
+// when a primary type was chosen, unlabeled when the counterparty carries label rows
+// but only never-pick (attribute) types, and none when the directory returned no row
+// for it at all. (no_coverage is decided a level up, per chain, not here.)
+func pickStatus(picked string, types []string) labelStatus {
+	switch {
+	case picked != "":
+		return statusLabeled
+	case len(types) > 0:
+		return statusUnlabeled
+	default:
+		return statusNone
+	}
+}
 
 // matchLabelFilter reports whether a picked primary label type passes the caller's
 // label_type / exclude_label_type filters: it must be in include (when include is

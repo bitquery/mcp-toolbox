@@ -65,6 +65,10 @@ type stmtVars struct {
 	TopK int
 	// MinUsd is an optional USD floor as a decimal literal ("0" = off).
 	MinUsd string
+	// MaxTxs is the per-side window cap for the UTXO statements (the newest MaxTxs
+	// spends and the newest MaxTxs receipts of the address), as an integer literal.
+	// Clamped in Go to [1, 2000]; the account-chain statements ignore it.
+	MaxTxs int
 	// Cursor is true on a page past the first: the statement then adds a keyset
 	// HAVING predicate that keeps only the counterparties strictly after the last
 	// returned one, in the same total order the ORDER BY sorts by. The four Cur*

@@ -40,14 +40,14 @@ func a3ByAddr() map[string][]labelRow {
 	return map[string][]labelRow{
 		"0xaaa": {{Address: "0xaaa", LabelType: "dex-router", Value: "cow", Source: "v"}},
 		"0xbbb": {{Address: "0xbbb", LabelType: "asset-manager", Value: "wm", Source: "v"}},
-		"0xccc": {}, // unlabeled (looked up, no labels)
+		"0xccc": {}, // looked up, no labels at all -> Label_Status none
 	}
 }
 
 func TestLabelFilterInclude(t *testing.T) {
 	tool := Tool{lm: testLabelMethod(t)}
 	res := a3Result()
-	tool.attachLabels(request{labelTypes: []string{"dex-router"}}, &res, a3ByAddr())
+	tool.attachLabels(request{labelTypes: []string{"dex-router"}}, &res, a3ByAddr(), false)
 	if len(res.Counterparties) != 1 || res.Counterparties[0].Counterparty != "0xaaa" {
 		t.Fatalf("include filter: want only 0xaaa, got %+v", res.Counterparties)
 	}
@@ -65,9 +65,9 @@ func TestLabelFilterInclude(t *testing.T) {
 func TestLabelFilterExclude(t *testing.T) {
 	tool := Tool{lm: testLabelMethod(t)}
 	res := a3Result()
-	// exclude dex-router: drop 0xaaa; keep 0xbbb (asset-manager) and 0xccc (unlabeled
-	// is NOT removed by exclude).
-	tool.attachLabels(request{excludeLabelTypes: []string{"dex-router"}}, &res, a3ByAddr())
+	// exclude dex-router: drop 0xaaa; keep 0xbbb (asset-manager) and 0xccc (no primary
+	// label is NOT removed by exclude).
+	tool.attachLabels(request{excludeLabelTypes: []string{"dex-router"}}, &res, a3ByAddr(), false)
 	got := map[string]bool{}
 	for _, c := range res.Counterparties {
 		got[c.Counterparty] = true
@@ -83,12 +83,14 @@ func TestLabelFilterExclude(t *testing.T) {
 func TestNoFilterKeepsAllAndSetsStatus(t *testing.T) {
 	tool := Tool{lm: testLabelMethod(t)}
 	res := a3Result()
-	tool.attachLabels(request{}, &res, a3ByAddr())
+	tool.attachLabels(request{}, &res, a3ByAddr(), false)
 	if len(res.Counterparties) != 3 || res.FilteredOut != 0 {
 		t.Fatalf("no filter: want all 3, FilteredOut 0; got %d rows, %d filtered", len(res.Counterparties), res.FilteredOut)
 	}
-	if res.Counterparties[2].LabelStatus != statusUnlabeled {
-		t.Errorf("0xccc label_status = %q, want unlabeled", res.Counterparties[2].LabelStatus)
+	// 0xccc was looked up and carries NO label rows -> none (not unlabeled, which is
+	// reserved for a counterparty that has labels but only never-pick attribute types).
+	if res.Counterparties[2].LabelStatus != statusNone {
+		t.Errorf("0xccc label_status = %q, want none", res.Counterparties[2].LabelStatus)
 	}
 	if res.PickRule == "" {
 		t.Error("Pick_Rule must be set on every call")

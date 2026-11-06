@@ -26,10 +26,11 @@ func testTool() Tool {
 	tmpl := template.Must(template.New("x").Parse("SELECT {{.TopK}}"))
 	lm, _ := compileLabelMethod(nil, nil, nil, nil, nil)
 	return Tool{
-		stmts:  map[string]*template.Template{"ethereum": tmpl, "arc": tmpl, "tron": tmpl},
-		chains: map[string]chainexec.HTTPSource{"ethereum": nil, "arc": nil, "tron": nil},
-		budget: Budget{}.withDefaults(),
-		lm:     lm,
+		stmts:      map[string]*template.Template{"ethereum": tmpl, "arc": tmpl, "tron": tmpl, "bitcoin": tmpl, "zcash": tmpl},
+		chains:     map[string]chainexec.HTTPSource{"ethereum": nil, "arc": nil, "tron": nil, "bitcoin": nil, "zcash": nil},
+		budget:     Budget{}.withDefaults(),
+		lm:         lm,
+		noCoverage: map[string]bool{"dash": true, "arc": true},
 	}
 }
 

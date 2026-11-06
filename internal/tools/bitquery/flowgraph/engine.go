@@ -45,6 +45,10 @@ const (
 	defaultDays  = 90
 	defaultLimit = 100
 	maxLimit     = 1000
+	// The UTXO per-side window: the newest defaultMaxTxs spends and receipts of the
+	// address, capped at maxMaxTxs. Only the UTXO statements read it.
+	defaultMaxTxs = 1000
+	maxMaxTxs     = 2000
 )
 
 // Budget bounds a call: its deadline, and one statement's time and rows. The
@@ -90,6 +94,7 @@ type request struct {
 	token           string // "" = all, else the chain's token key (EVM: 40 lower-hex, no 0x)
 	minUsd          float64
 	limit           int
+	maxTxs          int // UTXO per-side window cap (newest spends / receipts); account chains ignore it
 	// labelTypes / excludeLabelTypes are carried for the output shaping to filter
 	// counterparties by their labels; they do not reach the SQL.
 	labelTypes        []string
@@ -132,6 +137,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		MultiAddr:        len(req.addrs) > 1,
 		TopK:             req.limit,
 		MinUsd:           formatFloat(req.minUsd),
+		MaxTxs:           req.maxTxs,
 	}
 	if req.cur != nil {
 		vars.Cursor = true
@@ -161,8 +167,11 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	// FORMAT JSON, and the budget is applied here so max_execution_time is the
 	// time left before the call's deadline (lowering a setting is allowed on the
 	// readonly=2 gateway user). short_circuit keeps the gated price lookups from
-	// running on every bucket.
-	statement += settingsClause(maxRows, ex.Secs(ctx))
+	// running on every bucket on the account chains; the UTXO clusters run an older
+	// ClickHouse that does not know that setting (and has no gated lookup), so it is
+	// omitted there.
+	_, utxo := codec.(utxoChain)
+	statement += settingsClause(maxRows, ex.Secs(ctx), utxo)
 	doc, qerr := ex.QueryDoc(ctx, "counterparties", headerSender, statement)
 	if qerr != nil {
 		// A stop on the budget (the call's deadline, or a rows/bytes/memory
@@ -180,15 +189,25 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	// attaches them per row; group_by=label_type totals the flow by each one's
 	// primary type. Fetched once, over the returned page only.
 	rows := chainexec.RowsOf(doc)
-	addrs := make([]string, 0, len(rows))
-	for _, r := range rows {
-		// codec.normalize, never ToLower: a base58 Tron Counterparty is case-sensitive,
-		// and this key must match the labels map built in fetchLabels.
-		addrs = append(addrs, codec.normalize(chainexec.AsStr(r["Counterparty"])))
-	}
-	byAddr, partial, lerr := t.fetchLabels(ctx, ex, codec, t.labelChainsFor(req.chain), addrs)
-	if lerr != nil {
-		return nil, util.ProcessGeneralError(lerr)
+	// A no-coverage chain (cfg noCoverageChains, e.g. dash/arc) has no label data at
+	// all: skip the labels statement entirely and mark every counterparty no_coverage
+	// in the shaping. A covered chain with a counterparty that simply returns no row
+	// reads `none`, not `no_coverage` — the distinction AT8 turns on.
+	noCov := t.noCoverageChain(req.chain)
+	var byAddr map[string][]labelRow
+	var partial bool
+	if !noCov {
+		addrs := make([]string, 0, len(rows))
+		for _, r := range rows {
+			// codec.normalize, never ToLower: a base58 Tron Counterparty is case-sensitive,
+			// and this key must match the labels map built in fetchLabels.
+			addrs = append(addrs, codec.normalize(chainexec.AsStr(r["Counterparty"])))
+		}
+		var lerr error
+		byAddr, partial, lerr = t.fetchLabels(ctx, ex, codec, t.labelChainsFor(req.chain), addrs)
+		if lerr != nil {
+			return nil, util.ProcessGeneralError(lerr)
+		}
 	}
 
 	if req.groupBy == "label_type" {
@@ -203,7 +222,7 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	}
 
 	res := shapeAddress(req, doc)
-	t.attachLabels(req, &res, byAddr)
+	t.attachLabels(req, &res, byAddr, noCov)
 	res.Partial = partial
 	// next_cursor from the LAST SQL ROW of a full page (never the last surfaced
 	// row: a label filter the shaping applies can drop every row of a page, and
@@ -240,11 +259,13 @@ func isStopError(ctx context.Context, err error) bool {
 	}
 	s := err.Error()
 	// CH error codes: 159 TIMEOUT_EXCEEDED, 160 TOO_SLOW, 158 TOO_MANY_ROWS,
-	// 307 TOO_MANY_BYTES, 241 MEMORY_LIMIT_EXCEEDED.
+	// 307 TOO_MANY_BYTES, 241 MEMORY_LIMIT_EXCEEDED, 395 a throwIf size guard (the
+	// folded message carries SIZE_LIMIT_EXCEEDED so it surfaces as a narrow-it Partial,
+	// not a 5xx).
 	for _, needle := range []string{
-		"Code: 159", "Code: 160", "Code: 158", "Code: 307", "Code: 241",
+		"Code: 159", "Code: 160", "Code: 158", "Code: 307", "Code: 241", "Code: 395",
 		"TIMEOUT_EXCEEDED", "TOO_SLOW", "TOO_MANY_ROWS", "TOO_MANY_BYTES",
-		"MEMORY_LIMIT_EXCEEDED", "max_execution_time", "max_rows_to_read",
+		"MEMORY_LIMIT_EXCEEDED", "max_execution_time", "max_rows_to_read", "SIZE_LIMIT_EXCEEDED",
 	} {
 		if strings.Contains(s, needle) {
 			return true
@@ -340,6 +361,12 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if len(req.addrs) == 0 {
 		return request{}, agentErr("no valid %s address in addresses (%d invalid)", chain, len(req.invalid))
 	}
+	// A UTXO chain is served one address at a time: its pro-rata attribution is per
+	// address, so a set is N statements merged in Go — not built yet, so a set of more
+	// than one is refused here rather than silently answered for the first address.
+	if _, utxo := codec.(utxoChain); utxo && len(req.addrs) > 1 {
+		return request{}, agentErr("%s takes one address per call (a set is not supported on this chain yet); send the addresses one at a time", chain)
+	}
 
 	req.groupBy = strings.ToLower(strings.TrimSpace(chainexec.AsStr(p["group_by"])))
 	if req.groupBy == "" {
@@ -373,7 +400,14 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		return request{}, agentErr("after_time: %v", err)
 	}
 	if !hasAfter {
-		after = before.AddDate(0, 0, -defaultDays)
+		// A UTXO chain's spends/receipts predate the 90-day default by years, and its
+		// window is already bounded by max_txs (the newest N), so no after_time means
+		// the whole history floored at genesis — not an empty last-90-days window.
+		if uc, ok := codec.(utxoChain); ok {
+			after = uc.genesisFloor()
+		} else {
+			after = before.AddDate(0, 0, -defaultDays)
+		}
 	}
 	if !after.Before(before) {
 		return request{}, agentErr("after_time must be before before_time")
@@ -441,6 +475,20 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 		req.limit = maxLimit
 	}
 
+	// max_txs bounds the UTXO per-side window (newest spends / receipts). Clamped to
+	// [1, maxMaxTxs] in Go; the statement's least(greatest(...)) is belt-and-braces.
+	// It changes which transfers are read, so bindHash includes it (cursor safety).
+	req.maxTxs = defaultMaxTxs
+	if v, ok := p["max_txs"]; ok && v != nil {
+		req.maxTxs = int(chainexec.AsInt(v))
+	}
+	if req.maxTxs < 1 {
+		req.maxTxs = 1
+	}
+	if req.maxTxs > maxMaxTxs {
+		req.maxTxs = maxMaxTxs
+	}
+
 	req.format = strings.ToLower(strings.TrimSpace(chainexec.AsStr(p["format"])))
 	if req.format == "" {
 		req.format = "markdown"
@@ -491,11 +539,18 @@ func parseLabelTypes(s string) ([]string, error) {
 }
 
 // settingsClause is the SETTINGS the engine appends to every statement: the row
-// budget (throw, never a short read), the per-statement deadline, and forced
-// short-circuit so a gated price lookup does not run on every bucket.
-func settingsClause(maxRows int64, maxSeconds int) string {
-	return fmt.Sprintf("\nSETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d, short_circuit_function_evaluation = 'force_enable'",
-		maxRows, maxSeconds)
+// budget (throw, never a short read), the per-statement deadline, and — on the
+// account chains — forced short-circuit so a gated price lookup does not run on
+// every bucket. legacy=true (the UTXO clusters, an older ClickHouse) omits
+// short_circuit_function_evaluation, a setting that engine does not know (and that
+// the UTXO statements do not need: they have no gated price lookup).
+func settingsClause(maxRows int64, maxSeconds int, legacy bool) string {
+	shortCircuit := ", short_circuit_function_evaluation = 'force_enable'"
+	if legacy {
+		shortCircuit = ""
+	}
+	return fmt.Sprintf("\nSETTINGS max_rows_to_read = %d, read_overflow_mode = 'throw', max_execution_time = %d%s",
+		maxRows, maxSeconds, shortCircuit)
 }
 
 func splitAddresses(s string) []string {

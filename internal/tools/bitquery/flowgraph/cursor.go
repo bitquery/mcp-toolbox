@@ -138,6 +138,7 @@ func bindHash(req request) string {
 		"gb=" + req.groupBy,
 		"lt=" + strings.Join(lt, ","),
 		"xlt=" + strings.Join(xlt, ","),
+		"mtx=" + strconv.Itoa(req.maxTxs),
 	}, "\n")
 	sum := sha256.Sum256([]byte(canonical))
 	return base64.RawURLEncoding.EncodeToString(sum[:12])

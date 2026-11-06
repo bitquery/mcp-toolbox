@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"text/template"
 
 	yaml "github.com/goccy/go-yaml"
@@ -77,18 +78,25 @@ type Config struct {
 	Budget Budget `yaml:"budget"`
 	// The label-pick method: how a label source is classed, the trust order of
 	// those classes, and the label types that are never chosen as the primary.
-	LabelSources []SourceClassRule      `yaml:"labelSources"`
-	ClassRank    []string               `yaml:"classRank"`
-	NeverPick    []string               `yaml:"neverPick"`
-	Priority     []string               `yaml:"labelPriority"`
-	OtherOrder   []string               `yaml:"labelOtherOrder"`
+	LabelSources []SourceClassRule `yaml:"labelSources"`
+	ClassRank    []string          `yaml:"classRank"`
+	NeverPick    []string          `yaml:"neverPick"`
+	Priority     []string          `yaml:"labelPriority"`
+	OtherOrder   []string          `yaml:"labelOtherOrder"`
 	// LabelChains maps a tool chain to the directory.labels chain name(s) looked up
 	// for it: an EVM tool-chain lists the whole EVM directory family (one owner's
 	// label can sit under any EVM chain), a single-chain tool-chain lists its one
 	// slug. A statements chain absent here falls back to looking up its own name.
 	LabelChains map[string][]string `yaml:"labelChains"`
-	Parameters   parameters.Parameters  `yaml:"parameters"`
-	Annotations  *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+	// NoCoverageChains are the tool chains the directory holds NO labels for at all
+	// (dash, arc). A counterparty on such a chain is reported Label_Status=no_coverage
+	// and the labels statement is skipped entirely (cheaper, and honest: absence of a
+	// row there is not evidence the address is unlabelled). A chain NOT listed here
+	// whose counterparty returns no label row reads Label_Status=none instead — the
+	// distinction AT8 turns on (zcash resolves to none, not no_coverage).
+	NoCoverageChains []string               `yaml:"noCoverageChains"`
+	Parameters       parameters.Parameters  `yaml:"parameters"`
+	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
 
 var _ tools.ToolConfig = Config{}
@@ -113,6 +121,7 @@ var paramTypes = map[string]string{
 	"direction":          "string",
 	"after_time":         "string",
 	"before_time":        "string",
+	"max_txs":            "integer",
 	"include_internal":   "integer",
 	"include_zero_value": "integer",
 	"token":              "string",
@@ -183,6 +192,10 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		budget:      cfg.Budget.withDefaults(),
 		lm:          lm,
 		labelChains: labelChains,
+		noCoverage:  map[string]bool{},
+	}
+	for _, c := range cfg.NoCoverageChains {
+		t.noCoverage[strings.ToLower(strings.TrimSpace(c))] = true
 	}
 	// The sources come from the server at start-up. Offline flows (skills
 	// generation) initialize tools without them and never invoke one; a call is
@@ -258,6 +271,16 @@ type Tool struct {
 	// labelChains maps a tool chain to the directory.labels chain name(s) looked up
 	// for it (resolved at load, with a [chain] fallback); labelChainsFor reads it.
 	labelChains map[string][]string
+	// noCoverage is the set of chains the directory holds no labels for (cfg
+	// noCoverageChains): a counterparty on one reads Label_Status=no_coverage and the
+	// labels statement is skipped.
+	noCoverage map[string]bool
+}
+
+// noCoverageChain reports whether the tool chain has no label coverage at all (cfg
+// noCoverageChains): its counterparties are no_coverage and the labels read is skipped.
+func (t Tool) noCoverageChain(chain string) bool {
+	return t.noCoverage[strings.ToLower(strings.TrimSpace(chain))]
 }
 
 // labelChainsFor is the directory.labels chain list looked up for a tool chain:

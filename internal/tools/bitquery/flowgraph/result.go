@@ -145,17 +145,17 @@ type totalsOut struct {
 }
 
 type result struct {
-	Chain              string            `json:"chain"`
-	GroupBy            string            `json:"group_by"`
-	Window             windowOut         `json:"window"`
-	AddressesRequested int               `json:"addresses_requested"`
-	AddressesUsed      int               `json:"addresses_used"`
-	AddressesInvalid   []string          `json:"addresses_invalid,omitempty"`
-	IncludeInternal    int               `json:"include_internal"`
-	MinUsd             float64           `json:"min_usd"`
-	Counterparties     []cpRow           `json:"counterparties"`
-	BelowCutoff        remainder         `json:"below_cutoff"`
-	Totals             totalsOut         `json:"totals"`
+	Chain              string    `json:"chain"`
+	GroupBy            string    `json:"group_by"`
+	Window             windowOut `json:"window"`
+	AddressesRequested int       `json:"addresses_requested"`
+	AddressesUsed      int       `json:"addresses_used"`
+	AddressesInvalid   []string  `json:"addresses_invalid,omitempty"`
+	IncludeInternal    int       `json:"include_internal"`
+	MinUsd             float64   `json:"min_usd"`
+	Counterparties     []cpRow   `json:"counterparties"`
+	BelowCutoff        remainder `json:"below_cutoff"`
+	Totals             totalsOut `json:"totals"`
 	// SelfTransfers is the count of transfers between two input-set addresses
 	// (intra-set), excluded from the counterparty rows and the totals and counted
 	// here once; 0 for a single-address set.
@@ -327,19 +327,20 @@ func (r result) markdown() string {
 // exclude_label_type filters (dropping the non-matching rows and counting them in
 // Filtered_Out — Totals/BelowCutoff are NOT recomputed), and fills the share base
 // over the returned page. Pick_Rule is recorded for the call.
-func (t Tool) attachLabels(req request, r *result, byAddr map[string][]labelRow) {
+func (t Tool) attachLabels(req request, r *result, byAddr map[string][]labelRow, noCoverage bool) {
 	r.PickRule = t.lm.PickRule()
 	norm := normalizerFor(req.chain)
 	toolChain := t.labelChainsFor(req.chain)[0]
 	for i := range r.Counterparties {
 		c := &r.Counterparties[i]
+		if noCoverage {
+			// The chain has no label data at all: no pick, and the status says so.
+			c.LabelStatus = statusNoCoverage
+			continue
+		}
 		lt, lv, lc, types := t.lm.pick(restrictForContract(byAddr[norm(c.Counterparty)], toolChain))
 		c.Label, c.LabelValue, c.LabelChain, c.Labels = lt, lv, lc, types
-		if lt != "" {
-			c.LabelStatus = statusLabeled
-		} else {
-			c.LabelStatus = statusUnlabeled
-		}
+		c.LabelStatus = pickStatus(lt, types)
 	}
 	if len(req.labelTypes) > 0 || len(req.excludeLabelTypes) > 0 {
 		keep := r.Counterparties[:0]
