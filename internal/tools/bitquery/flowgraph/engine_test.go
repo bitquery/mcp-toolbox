@@ -15,6 +15,8 @@
 package flowgraph
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"text/template"
@@ -38,6 +40,21 @@ const (
 	addrA = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	addrB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
+
+func TestIsStopErrorBudgetSentinels(t *testing.T) {
+	ctx := context.Background()
+	for _, e := range []error{chainexec.ErrNoTime, chainexec.ErrBudget} {
+		if !isStopError(ctx, e) {
+			t.Errorf("isStopError must treat %v as a budget stop (Partial), not a failure", e)
+		}
+	}
+	if !isStopError(ctx, fmt.Errorf("DB::Exception Code: 159 TIMEOUT_EXCEEDED")) {
+		t.Error("isStopError must recognise a ClickHouse timeout code")
+	}
+	if isStopError(ctx, fmt.Errorf("some unrelated failure")) {
+		t.Error("isStopError must NOT swallow an unrelated error as a budget stop")
+	}
+}
 
 func TestParseValid(t *testing.T) {
 	req, err := testTool().parse(map[string]any{

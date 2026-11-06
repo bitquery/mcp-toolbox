@@ -206,7 +206,14 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 		var lerr error
 		byAddr, partial, lerr = t.fetchLabels(ctx, ex, codec, t.labelChainsFor(req.chain), addrs)
 		if lerr != nil {
-			return nil, util.ProcessGeneralError(lerr)
+			// A labels statement that cannot start (budget too tight) or overflows is a
+			// budget stop, not a failure: keep the counterparty rows, omit the labels, and
+			// mark the page Partial rather than failing the whole call.
+			if isStopError(ctx, lerr) {
+				byAddr, partial = nil, true
+			} else {
+				return nil, util.ProcessGeneralError(lerr)
+			}
 		}
 	}
 
@@ -253,6 +260,12 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 func isStopError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
+	}
+	// A pre-statement budget refusal — no time left to start a statement
+	// (chainexec.ErrNoTime, raised under a tight deadline) or the row budget already
+	// spent (ErrBudget) — is a budget stop, not a failure: surface it as a Partial page.
+	if errors.Is(err, chainexec.ErrNoTime) || errors.Is(err, chainexec.ErrBudget) {
+		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 		return true
