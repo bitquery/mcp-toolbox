@@ -167,11 +167,10 @@ func (t Tool) run(ctx context.Context, p map[string]any) (any, util.ToolboxError
 	// FORMAT JSON, and the budget is applied here so max_execution_time is the
 	// time left before the call's deadline (lowering a setting is allowed on the
 	// readonly=2 gateway user). short_circuit keeps the gated price lookups from
-	// running on every bucket on the account chains; the UTXO clusters run an older
-	// ClickHouse that does not know that setting (and has no gated lookup), so it is
-	// omitted there.
-	_, utxo := codec.(utxoChain)
-	statement += settingsClause(maxRows, ex.Secs(ctx), utxo)
+	// running on every bucket on the account chains; the legacy clusters (UTXO and
+	// Solana, both CH 20.8) run an older ClickHouse that does not know that setting
+	// (and have no gated lookup), so it is omitted there.
+	statement += settingsClause(maxRows, ex.Secs(ctx), isLegacyCluster(codec))
 	doc, qerr := ex.QueryDoc(ctx, "counterparties", headerSender, statement)
 	if qerr != nil {
 		// A stop on the budget (the call's deadline, or a rows/bytes/memory
@@ -551,12 +550,30 @@ func parseLabelTypes(s string) ([]string, error) {
 	return out, nil
 }
 
+// legacyClusterCodec is implemented by a codec whose transfer cluster runs an old
+// ClickHouse (CH 20.8) that rejects short_circuit_function_evaluation. utxoCodec is
+// legacy via utxoChain; solanaCodec declares it here (it is account-based, not UTXO).
+type legacyClusterCodec interface{ legacyCluster() bool }
+
+// isLegacyCluster reports whether a chain's transfer cluster is old ClickHouse (CH
+// 20.8): the UTXO clusters (utxoChain) and Solana (legacyClusterCodec). The engine
+// omits short_circuit_function_evaluation for these — the setting is unknown on 20.8.
+func isLegacyCluster(c chainCodec) bool {
+	if _, ok := c.(utxoChain); ok {
+		return true
+	}
+	if lc, ok := c.(legacyClusterCodec); ok {
+		return lc.legacyCluster()
+	}
+	return false
+}
+
 // settingsClause is the SETTINGS the engine appends to every statement: the row
 // budget (throw, never a short read), the per-statement deadline, and — on the
 // account chains — forced short-circuit so a gated price lookup does not run on
-// every bucket. legacy=true (the UTXO clusters, an older ClickHouse) omits
-// short_circuit_function_evaluation, a setting that engine does not know (and that
-// the UTXO statements do not need: they have no gated price lookup).
+// every bucket. legacy=true (the UTXO clusters and Solana, an older ClickHouse)
+// omits short_circuit_function_evaluation, a setting that engine does not know (and
+// that those statements do not need: no gated price lookup).
 func settingsClause(maxRows int64, maxSeconds int, legacy bool) string {
 	shortCircuit := ", short_circuit_function_evaluation = 'force_enable'"
 	if legacy {
