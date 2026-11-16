@@ -659,3 +659,206 @@ func TestWalkProdLoneSeedCallBudget(t *testing.T) {
 		t.Errorf("the heavy seed's edge/target must be returned; graph=%s", string(b))
 	}
 }
+
+// --- F9: the two added walk codes, through the real parse -------------------
+
+// TestWalkAfterBeforeCode: after_time after before_time comes from the SHARED t.parse
+// (uncoded); runWalk wraps it with the bad_request code without touching t.parse. The
+// refusal is before any fetch, so no statement runs.
+func TestWalkAfterBeforeCode(t *testing.T) {
+	S := addr(1)
+	src := &fakeFlowSource{}
+	src.respond = func(string) []map[string]any { return nil }
+	pt := prodWalkTool(src, edgeTmplT)
+	_, err := pt.runWalk(context.Background(), map[string]any{
+		"chain": "ethereum", "address": S, "after_time": "2026-08-01", "before_time": "2026-07-01",
+	})
+	if err == nil {
+		t.Fatal("after_time after before_time must be an error")
+	}
+	if !strings.HasPrefix(err.Error(), "bad_request: ") {
+		t.Errorf("window-order error %q must carry the bad_request code", err.Error())
+	}
+	if len(src.stmts) != 0 {
+		t.Errorf("a window-order refusal must run no statements, got %d", len(src.stmts))
+	}
+}
+
+// TestWalkUnknownStopGroupCode: an unknown stop_at group is a coded bad_request that
+// names the sorted allowed groups, before any fetch.
+func TestWalkUnknownStopGroupCode(t *testing.T) {
+	S := addr(1)
+	src := &fakeFlowSource{}
+	src.respond = func(string) []map[string]any { return nil }
+	pt := prodWalkTool(src, edgeTmplT)
+	_, err := pt.runWalk(context.Background(), map[string]any{
+		"chain": "ethereum", "address": S, "stop_at": "bogus",
+	})
+	if err == nil {
+		t.Fatal("an unknown stop group must be an error")
+	}
+	if !strings.HasPrefix(err.Error(), "bad_request: ") {
+		t.Errorf("unknown-stop-group error %q must carry the bad_request code", err.Error())
+	}
+	if !strings.Contains(err.Error(), "unknown group") {
+		t.Errorf("message %q must name the unknown-group condition", err.Error())
+	}
+	// The allowed list is the sorted default group names.
+	if !strings.Contains(err.Error(), "allowed: bridge, exchange, mixer") {
+		t.Errorf("message %q must list the sorted allowed groups", err.Error())
+	}
+	if len(src.stmts) != 0 {
+		t.Errorf("an unknown-stop-group refusal must run no statements, got %d", len(src.stmts))
+	}
+}
+
+// TestWalkPrecheckGrammar: the article (an/a) and the singular/plural seed(s)/address(es).
+func TestWalkPrecheckGrammar(t *testing.T) {
+	tl := testTool()
+	if err := tl.walkPrecheck(map[string]any{"chain": "ethereum", "address": tronA}); err == nil {
+		t.Fatal("a tron seed on ethereum must mismatch")
+	} else if !strings.Contains(err.Error(), "is not an ethereum address") {
+		t.Errorf("mismatch message %q must use the article 'an' before ethereum", err.Error())
+	}
+	if err := tl.walkPrecheck(map[string]any{"chain": "ethereum", "address": "garbage"}); err == nil {
+		t.Fatal("a garbage seed must be rejected")
+	} else if !strings.Contains(err.Error(), "seed garbage is not a valid ethereum address") {
+		t.Errorf("single-garbage message %q must be singular", err.Error())
+	}
+	if err := tl.walkPrecheck(map[string]any{"chain": "ethereum", "addresses": "garbage1,garbage2"}); err == nil {
+		t.Fatal("garbage seeds must be rejected")
+	} else if !strings.Contains(err.Error(), "seeds garbage1, garbage2 are not valid ethereum addresses") {
+		t.Errorf("plural-garbage message %q must be plural (seeds ... are not valid ... addresses)", err.Error())
+	}
+}
+
+// --- F13: include_zero_value reaches the rendered flow_edges statement ------
+
+// TestWalkIncludeZeroReachesStatement proves the hub-signal filter (include_zero_value)
+// reaches the rendered statement. Its EFFECT on the per-source Counterparties count is
+// a property of the cfg SQL, not of this engine, so it is NOT asserted here (that needs
+// a live check against the cluster): the offline, honest claim is only that the
+// parameter is wired through to the rendered statement.
+func TestWalkIncludeZeroReachesStatement(t *testing.T) {
+	S, A := addr(1), addr(2)
+	src := &fakeFlowSource{}
+	src.respond = func(s string) []map[string]any {
+		if strings.Contains(s, hexOf(S)) {
+			return []map[string]any{edgeDocRow(S, A, 100, 1)}
+		}
+		return nil
+	}
+	tmpl := "SELECT 'EDGE' /*izv={{.IncludeZeroValue}} per_node={{.TopK}}*/ FROM transfers WHERE Source IN {{.SetLiteral}}"
+	pt := prodWalkTool(src, tmpl)
+	if _, err := pt.runWalk(context.Background(), map[string]any{
+		"chain": "ethereum", "address": S, "hops": int64(1), "include_zero_value": int64(1),
+	}); err != nil {
+		t.Fatalf("runWalk: %v", err)
+	}
+	var saw bool
+	for _, s := range src.stmts {
+		if strings.Contains(s, "izv=1") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("include_zero_value=1 did not reach the flow_edges statement; stmts=%v", src.stmts)
+	}
+}
+
+// --- F6/F7 end-to-end through the production runWalk path -------------------
+
+// TestWalkRunWalkParamsEcho exercises the EFFECTIVE-params echo through runWalk (not a
+// hand-built result): the Params text and structuredContent carry the clamped hops,
+// the effective per_node, the window END, stop_at and the token. It then re-sends the
+// echoed params as the app's Expand would, to show the round-trip.
+func TestWalkRunWalkParamsEcho(t *testing.T) {
+	S, A := addr(1), addr(2)
+	tokHex := "dac17f958d2ee523a2206206994597c13d831ec7"
+	src := &fakeFlowSource{}
+	src.respond = func(s string) []map[string]any {
+		if strings.Contains(s, hexOf(S)) {
+			return []map[string]any{edgeDocRow(S, A, 100, 1)}
+		}
+		return nil
+	}
+	pt := prodWalkTool(src, edgeTmplT)
+	res, err := pt.runWalk(context.Background(), map[string]any{
+		"chain": "ethereum", "address": S,
+		"hops": int64(5), "per_node": int64(7), // hops clamps 5 -> maxHops (3)
+		"stop_at": "exchange", "token": "0x" + tokHex,
+		"after_time": "2026-07-01", "before_time": "2026-07-21",
+		"include_zero_value": int64(1),
+	})
+	if err != nil {
+		t.Fatalf("runWalk: %v", err)
+	}
+	sr := res.(tools.StructuredResult)
+	text := sr.Content[0].(tools.TextResult).Text
+	for _, want := range []string{
+		"hops=3 (clamped from 5)",
+		"per_node=7",
+		"window 2026-07-01T00:00:00Z..2026-07-21T00:00:00Z",
+		"stop_at=exchange",
+		"token=" + tokHex,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runWalk text missing %q\n%s", want, text)
+		}
+	}
+	params := sr.Structured["params"].(map[string]any)
+	for _, k := range []string{"before_time", "per_node", "stop_at", "token"} {
+		if _, ok := params[k]; !ok {
+			t.Errorf("structured params missing %q", k)
+		}
+	}
+	if params["token"] != tokHex {
+		t.Errorf("structured params token = %v, want the effective no-0x key %s", params["token"], tokHex)
+	}
+
+	// Expand re-sends every echoed param except address and hops. WITHOUT a token it
+	// must succeed — which also proves the RFC3339 before_time echo parses back.
+	expand := map[string]any{
+		"chain": "ethereum", "address": A,
+		"after_time":         params["after_time"],
+		"before_time":        params["before_time"],
+		"per_node":           params["per_node"],
+		"stop_at":            params["stop_at"],
+		"min_usd":            params["min_usd"],
+		"include_internal":   params["include_internal"],
+		"include_zero_value": int64(1),
+	}
+	if _, e := pt.runWalk(context.Background(), expand); e != nil {
+		t.Errorf("Expand re-send (no token) must succeed (the RFC3339 before_time must parse): %v", e)
+	}
+	// WITH the echoed token (no-0x), evmCodec.tokenKey requires a 0x prefix, so this
+	// Expand is REJECTED. This documents pre-existing codec behaviour that the token echo
+	// surfaces (the brief keeps Token = req.token). TRIPWIRE: if this begins to pass, the
+	// codec round-trip changed — revisit the token echo and update this test.
+	expand["token"] = params["token"]
+	if _, e := pt.runWalk(context.Background(), expand); e == nil {
+		t.Error("Expand re-send WITH the echoed no-0x token is expected to be rejected by evmCodec.tokenKey (0x required)")
+	}
+}
+
+// TestWalkRunWalkEmptyHint: a production walk that returns no edges carries the
+// no-match hint with the effective include_zero_value, through runWalk.
+func TestWalkRunWalkEmptyHint(t *testing.T) {
+	S := addr(1)
+	src := &fakeFlowSource{}
+	src.respond = func(string) []map[string]any { return nil } // no edges
+	pt := prodWalkTool(src, edgeTmplT)
+	res, err := pt.runWalk(context.Background(), map[string]any{
+		"chain": "ethereum", "address": S, "hops": int64(1), "include_zero_value": int64(1),
+	})
+	if err != nil {
+		t.Fatalf("runWalk: %v", err)
+	}
+	text := res.(tools.StructuredResult).Content[0].(tools.TextResult).Text
+	if !strings.Contains(text, "No outgoing transfers matched the filters") {
+		t.Errorf("an empty production walk must carry the hint:\n%s", text)
+	}
+	if !strings.Contains(text, "include_zero_value=1") {
+		t.Errorf("the empty-graph hint must echo the effective include_zero_value:\n%s", text)
+	}
+}

@@ -281,7 +281,17 @@ func (r result) markdown() string {
 		fmt.Fprintf(&b, " (%d more on the page were dropped by the label filter; walk the cursor for further matches)", r.FilteredOut)
 	}
 	b.WriteString(". ")
-	fmt.Fprintf(&b, "Total flow $%s (in $%s, out $%s); ", usd(r.Totals.UsdTotal), usdP(r.Totals.UsdIn), usdP(r.Totals.UsdOut))
+	// Whole flow unpriced: no priced USD on either side (both Usd_In and Usd_Out
+	// are NULL, so Usd_Total collapsed to 0) — print "unpriced" rather than a
+	// misleading "$0.00" total and a bare "$" after in/out (F18). Any priced side
+	// keeps the dollar line byte-for-byte; an empty window (no transfers) is left
+	// unchanged too.
+	if r.Totals.UsdIn == nil && r.Totals.UsdOut == nil && r.Totals.UsdTotal == 0 &&
+		r.Totals.TransfersIn+r.Totals.TransfersOut > 0 {
+		b.WriteString("Total flow: unpriced; ")
+	} else {
+		fmt.Fprintf(&b, "Total flow $%s (in $%s, out $%s); ", usd(r.Totals.UsdTotal), usdP(r.Totals.UsdIn), usdP(r.Totals.UsdOut))
+	}
 	if r.BelowCutoff.Usd == 0 && r.BelowCutoff.Transfers > 0 {
 		fmt.Fprintf(&b, "below the cutoff: unpriced ($0 priced) across %d transfers.\n", r.BelowCutoff.Transfers)
 	} else {

@@ -94,15 +94,21 @@ type walkNode struct {
 	UsdDropped   float64      `json:"usd_dropped"`
 }
 
-// walkParamsOut is the echoed request, the exact five keys the fixture and the
-// app's Expand re-send (Expand re-sends every params field except address and
-// hops). after_time is RFC3339 so the window is not shifted by date truncation.
+// walkParamsOut is the echoed request: the params the fixture carries and the app's
+// Expand re-sends (Expand re-sends every params field except address and hops).
+// after_time / before_time are RFC3339 so the window is not shifted by date
+// truncation. per_node, stop_at and token echo the EFFECTIVE (post-default,
+// post-clamp) request, so a caller sees what actually ran rather than what it asked.
 type walkParamsOut struct {
 	Address         []string `json:"address"`
 	Hops            int      `json:"hops"`
 	AfterTime       string   `json:"after_time"`
+	BeforeTime      string   `json:"before_time"`
 	MinUsd          float64  `json:"min_usd"`
 	IncludeInternal int      `json:"include_internal"`
+	PerNode         int      `json:"per_node"`
+	StopAt          string   `json:"stop_at"`
+	Token           string   `json:"token"`
 }
 
 // walkResult is a flow_graph/1 document. cost is a NUMBER (the rows read): the
@@ -124,6 +130,13 @@ type walkResult struct {
 	// (some edges) from a hard budget_exceeded refusal (no edges). It is never
 	// serialized, so the flow_graph/1 shape is unchanged.
 	budgetStopped bool `json:"-"`
+	// hopsClampedFrom is the raw hops the caller asked for, set by runWalk only when it
+	// differed from the effective (clamped) hops (0 otherwise). Text-only (json:"-"), so
+	// summary() can say "clamped from N"; it is never part of the flow_graph/1 document.
+	hopsClampedFrom int `json:"-"`
+	// includeZero echoes the effective include_zero_value (0/1) for the empty-graph hint
+	// text only. Text-only (json:"-"), never part of the document.
+	includeZero int `json:"-"`
 }
 
 // fetchResult is one batched hop fetch: the outgoing edges of the requested sources,
@@ -764,8 +777,9 @@ func (r *walkResult) toMap() map[string]any {
 	return m
 }
 
-// summary is the short text the model reads (content): the counts, the stop nodes
-// and the flags. The full graph is the structured document.
+// summary is the short text the model reads (content): the counts, the effective
+// params, the stop nodes (by address) and a seed/stop node block. The full graph is
+// the structured document.
 func (r *walkResult) summary() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Flow graph — %s. %d nodes, %d edges, up to %d hops from %d seed(s).",
@@ -777,20 +791,96 @@ func (r *walkResult) summary() string {
 		b.WriteString(" Partial: stopped on the budget.")
 	}
 	b.WriteString("\n")
+	b.WriteString(r.paramsLine())
+	// Stops print the ADDRESS (a node id is a unique address), the label in brackets
+	// when known, and the reason — never deduped, since distinct stop nodes are distinct
+	// even when they share a label.
 	var stops []string
 	for _, n := range r.Nodes {
 		if n.Role == "stop" && n.StopReason != nil {
-			name := n.ID
+			s := n.ID
 			if n.Label != nil {
-				name = *n.Label
+				s += " [" + *n.Label + "]"
 			}
-			stops = append(stops, fmt.Sprintf("%s (%s)", name, *n.StopReason))
+			stops = append(stops, fmt.Sprintf("%s (%s)", s, *n.StopReason))
 		}
 	}
 	if len(stops) > 0 {
 		fmt.Fprintf(&b, "Stopped at: %s.\n", strings.Join(stops, ", "))
 	}
+	// An empty graph that is NOT a budget partial: name the active filters that could
+	// have emptied it, from the request alone — no extra query (that would bill a
+	// statement). A budget partial already explains itself with the Partial marker.
+	if len(r.Edges) == 0 && !r.Partial {
+		token := r.Params.Token
+		if token == "" {
+			token = "any"
+		}
+		fmt.Fprintf(&b, "No outgoing transfers matched the filters (window %s..%s; min_usd=%s; token=%s; include_zero_value=%d).\n",
+			r.Params.AfterTime, r.Params.BeforeTime, fmtUsd(r.Params.MinUsd), token, r.includeZero)
+	}
+	b.WriteString(r.nodesCSV())
 	return b.String()
+}
+
+// paramsLine echoes the EFFECTIVE request (post-default, post-clamp), including
+// whether hops was clamped, so a caller sees what actually ran.
+func (r *walkResult) paramsLine() string {
+	stopAt := r.Params.StopAt
+	if strings.TrimSpace(stopAt) == "" {
+		stopAt = "all"
+	}
+	token := r.Params.Token
+	if token == "" {
+		token = "any"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Params: hops=%d", r.Params.Hops)
+	if r.hopsClampedFrom != 0 {
+		fmt.Fprintf(&b, " (clamped from %d)", r.hopsClampedFrom)
+	}
+	fmt.Fprintf(&b, ", window %s..%s, per_node=%d, min_usd=%s, stop_at=%s, token=%s\n",
+		r.Params.AfterTime, r.Params.BeforeTime, r.Params.PerNode, fmtUsd(r.Params.MinUsd), stopAt, token)
+	return b.String()
+}
+
+// nodesCSV is the node identity block: the seed and stop nodes as CSV (the nodes a
+// reader acts on), so the text names each by ADDRESS, not only by a shared label. It
+// is written with encoding/csv — a chain-supplied label is attacker-controlled, like
+// the edge symbol. A nil label or stop_reason is "", and in/out USD follow usdCell
+// ("" — never 0 — when unpriced).
+func (r *walkResult) nodesCSV() string {
+	var rows []walkNode
+	for _, n := range r.Nodes {
+		if n.Role == "seed" || n.Role == "stop" {
+			rows = append(rows, n)
+		}
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("nodes (seeds and stops):\n")
+	w := csv.NewWriter(&b)
+	_ = w.Write([]string{"address", "role", "label", "stop_reason", "in_usd", "out_usd"})
+	for _, n := range rows {
+		label, reason := "", ""
+		if n.Label != nil {
+			label = *n.Label
+		}
+		if n.StopReason != nil {
+			reason = *n.StopReason
+		}
+		_ = w.Write([]string{n.ID, n.Role, label, reason, usdCell(n.InUsd), usdCell(n.OutUsd)})
+	}
+	w.Flush()
+	return b.String()
+}
+
+// fmtUsd formats a USD threshold for the text summary ('f', -1 so 1_000_000 prints as
+// 1000000, not the 1e+06 that %v would give).
+func fmtUsd(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // maxContentEdges is how many edges the text content carries as CSV; the full graph
@@ -816,20 +906,42 @@ func (r *walkResult) content(share bool) string {
 	return b.String()
 }
 
-// edgesCSV renders up to n edges as CSV. It is written with encoding/csv, so a
-// chain-supplied symbol that contains a comma, a quote or a newline is quoted and
-// cannot forge a new row or column (Symbol is attacker-controlled on-chain data).
+// edgesCSV renders the top n edges BY USD as CSV (so truncation drops the smallest
+// flows, not the last-traversed), ranked on a copy that leaves r.Edges untouched. It
+// is written with encoding/csv, so a chain-supplied symbol that contains a comma, a
+// quote or a newline is quoted and cannot forge a new row or column (Symbol is
+// attacker-controlled on-chain data).
 func (r *walkResult) edgesCSV(n int) string {
 	var b strings.Builder
-	shown := len(r.Edges)
+	// Rank a COPY by USD so the text keeps the HIGHEST-value edges when it truncates,
+	// rather than the first-traversed. r.Edges — the structured document's order — is
+	// never reordered (runWalk renders content() before toMap()).
+	ranked := append([]edgeRow(nil), r.Edges...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		pi, pj := ranked[i].AmountUsd != nil, ranked[j].AmountUsd != nil
+		if pi != pj {
+			return pi // priced before unpriced (nulls last)
+		}
+		if pi && pj && *ranked[i].AmountUsd != *ranked[j].AmountUsd {
+			return *ranked[i].AmountUsd > *ranked[j].AmountUsd
+		}
+		if ranked[i].Transfers != ranked[j].Transfers {
+			return ranked[i].Transfers > ranked[j].Transfers
+		}
+		if ranked[i].To != ranked[j].To {
+			return ranked[i].To < ranked[j].To
+		}
+		return ranked[i].Token < ranked[j].Token
+	})
+	shown := len(ranked)
 	if shown > n {
 		shown = n
-		fmt.Fprintf(&b, "Showing %d of %d edges as CSV; the full graph is in structuredContent.\n", n, len(r.Edges))
+		fmt.Fprintf(&b, "Showing the top %d of %d edges by USD as CSV; the full graph is in structuredContent.\n", n, len(ranked))
 	}
 	b.WriteString("\n")
 	w := csv.NewWriter(&b)
 	_ = w.Write([]string{"from", "to", "token", "symbol", "amount", "amount_usd", "usd_priced_share", "transfers", "first_seen", "last_seen"})
-	for _, ed := range r.Edges[:shown] {
+	for _, ed := range ranked[:shown] {
 		_ = w.Write([]string{
 			ed.From, ed.To, ed.Token, ed.Symbol, ed.Amount,
 			usdCell(ed.AmountUsd), strconv.FormatFloat(ed.UsdPricedShare, 'f', -1, 64),

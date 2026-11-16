@@ -16,11 +16,13 @@ package flowgraph
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -786,7 +788,17 @@ func TestWalkResultKeysMatchFixture(t *testing.T) {
 	if kf, kg := kind(fix["cost"]), kind(got["cost"]); kf != kg {
 		t.Errorf("cost kind: fixture %s, got %s", kf, kg)
 	}
-	assertSameKeys(t, "params", fix["params"].(map[string]any), got["params"].(map[string]any))
+	// F6 added before_time / per_node / stop_at / token to the echoed params. The
+	// on-disk fixture (and ui/README.md) still carry the original five keys and were
+	// left untouched (out of the walk-render edit scope), so allow those four as
+	// documented extras here; every other key must still match exactly.
+	fp := fix["params"].(map[string]any)
+	for _, k := range []string{"before_time", "per_node", "stop_at", "token"} {
+		if _, ok := fp[k]; !ok {
+			fp[k] = nil
+		}
+	}
+	assertSameKeys(t, "params", fp, got["params"].(map[string]any))
 	assertSameKeys(t, "node", fix["nodes"].([]any)[0].(map[string]any), got["nodes"].([]any)[0].(map[string]any))
 	assertSameKeys(t, "edge", fix["edges"].([]any)[0].(map[string]any), got["edges"].([]any)[0].(map[string]any))
 	assertSameKeys(t, "label entry", firstLabel(t, fix), firstLabel(t, got))
@@ -837,4 +849,255 @@ func firstLabel(t *testing.T, doc map[string]any) map[string]any {
 	}
 	t.Fatal("no node with a label found")
 	return nil
+}
+
+// --- F1: stop line names the ADDRESS, plus the seed/stop node block --------
+
+// parseNodeBlock parses the "nodes (seeds and stops):" CSV block of a summary,
+// returning each data row keyed by its address (column 0).
+func parseNodeBlock(t *testing.T, summary string) map[string][]string {
+	t.Helper()
+	const hdr = "address,role,label,stop_reason,in_usd,out_usd"
+	i := strings.Index(summary, hdr)
+	if i < 0 {
+		t.Fatalf("node block header not found in summary:\n%s", summary)
+	}
+	r := csv.NewReader(strings.NewReader(summary[i:]))
+	r.FieldsPerRecord = -1
+	recs, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("node block CSV must parse: %v", err)
+	}
+	out := map[string][]string{}
+	for _, rec := range recs {
+		if len(rec) == 6 && rec[0] != "address" {
+			out[rec[0]] = rec
+		}
+	}
+	return out
+}
+
+func assertNodeRow(t *testing.T, rows map[string][]string, id, role, label, reason, inUsd, outUsd string) {
+	t.Helper()
+	rec, ok := rows[id]
+	if !ok {
+		t.Errorf("node block missing row for %s", short(id))
+		return
+	}
+	got := []string{rec[1], rec[2], rec[3], rec[4], rec[5]}
+	want := []string{role, label, reason, inUsd, outUsd}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("node %s row = %v, want %v", short(id), got, want)
+	}
+}
+
+func TestWalkSummaryStopAndNodeBlock(t *testing.T) {
+	S, A, B, C := addr(1), addr(2), addr(3), addr(4)
+	mock := &mockFetcher{
+		out: map[string][]edgeRow{
+			S: {edge(S, A, 100), edge(S, C, 80), edge(S, B, 50)},
+			A: {edge(A, addr(201), 10)},
+			C: {edge(C, addr(202), 10)},
+			B: {edge(B, addr(203), 10)},
+		},
+		counts: map[string]int{B: 500}, // B is a hub
+	}
+	in := baseInput(t, "ethereum", []string{S}, 2, mock)
+	// A and C are both exchanges labelled "binance" (a shared label); B is a hub.
+	in.label = func(_ context.Context, _ []string) (map[string][]labelRow, bool, error) {
+		return map[string][]labelRow{
+			A: {{Address: A, Chain: "ethereum", LabelType: "cex-hot-wallet", Value: "binance", Source: "v"}},
+			C: {{Address: C, Chain: "ethereum", LabelType: "cex-hot-wallet", Value: "binance", Source: "v"}},
+		}, false, nil
+	}
+	in.stopTypes = map[string]bool{"cex-hot-wallet": true}
+
+	res, err := runWalkGraph(context.Background(), in)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	s := res.summary()
+
+	// Each stop is named by ADDRESS (+ [label] when known); two distinct nodes that
+	// share a label are both listed (no dedup).
+	for _, want := range []string{
+		A + " [binance] (label)",
+		C + " [binance] (label)",
+		B + " (hub)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("stop line missing %q\nsummary:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "binance (label), binance (label)") {
+		t.Error("the stop line must not print the bare label (the old apparent-dup bug)")
+	}
+
+	// The node block lists the seed and every stop, by address, with correct USD.
+	rows := parseNodeBlock(t, s)
+	assertNodeRow(t, rows, S, "seed", "", "", "", "230") // seed out = 100+80+50
+	assertNodeRow(t, rows, A, "stop", "binance", "label", "100", "")
+	assertNodeRow(t, rows, C, "stop", "binance", "label", "80", "")
+	assertNodeRow(t, rows, B, "stop", "", "hub", "50", "")
+	if _, ok := rows[addr(201)]; ok {
+		t.Error("the node block must list only seeds and stops, not hop/unexpanded targets")
+	}
+}
+
+// --- F4: the edge CSV shows the TOP-N by USD, r.Edges unchanged ------------
+
+func parseEdgeCSV(t *testing.T, s string) [][]string {
+	t.Helper()
+	const hdr = "from,to,token,symbol"
+	i := strings.Index(s, hdr)
+	if i < 0 {
+		t.Fatalf("edge CSV header not found:\n%s", s)
+	}
+	r := csv.NewReader(strings.NewReader(s[i:]))
+	r.FieldsPerRecord = -1
+	recs, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("edge CSV must parse: %v", err)
+	}
+	var out [][]string
+	for _, rec := range recs {
+		if len(rec) >= 6 && rec[0] != "from" {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func TestWalkEdgesCSVTopByUSD(t *testing.T) {
+	a1 := addr(1)
+	u10, u100, u50 := 10.0, 100.0, 50.0
+	mk := func(to string, usd *float64) edgeRow {
+		return edgeRow{From: a1, To: to, Token: "native", Symbol: "ETH", Amount: "1", AmountUsd: usd, UsdPricedShare: 1, Transfers: 1, FirstSeen: "2026-07-21T00:00:00Z", LastSeen: "2026-07-22T00:00:00Z"}
+	}
+	// Traversal order is deliberately NOT USD order, with the nil-USD edge FIRST.
+	res := &walkResult{
+		Schema: walkSchema, Chain: "eth",
+		Params: walkParamsOut{Address: []string{a1}, Hops: 1},
+		Edges:  []edgeRow{mk(addr(2), nil), mk(addr(3), &u10), mk(addr(4), &u100), mk(addr(5), &u50)},
+	}
+	wantOrder := []string{addr(2), addr(3), addr(4), addr(5)}
+
+	out := res.edgesCSV(2) // top 2 by USD
+	if !strings.Contains(out, "Showing the top 2 of 4 edges by USD") {
+		t.Errorf("missing top-by-USD notice:\n%s", out)
+	}
+	recs := parseEdgeCSV(t, out)
+	if len(recs) != 2 {
+		t.Fatalf("edge CSV data rows = %d, want 2", len(recs))
+	}
+	if recs[0][5] != "100" || recs[1][5] != "50" {
+		t.Errorf("CSV USD order = %q,%q, want 100,50 (USD desc, nulls last)", recs[0][5], recs[1][5])
+	}
+	for _, r := range recs {
+		if r[1] == addr(2) {
+			t.Error("the nil-USD edge must drop last, not appear in the top 2")
+		}
+	}
+	// r.Edges (the structured document order) must be untouched by the text CSV.
+	var gotOrder []string
+	for _, e := range res.Edges {
+		gotOrder = append(gotOrder, e.To)
+	}
+	if fmt.Sprint(gotOrder) != fmt.Sprint(wantOrder) {
+		t.Errorf("edgesCSV reordered r.Edges: %v, want %v", gotOrder, wantOrder)
+	}
+}
+
+// --- F6: the Params line echoes the effective request (clamp noted) --------
+
+func TestWalkParamsLineClamped(t *testing.T) {
+	res := &walkResult{
+		Chain:           "eth",
+		Params:          walkParamsOut{Address: []string{addr(1)}, Hops: 3, AfterTime: "2026-07-01T00:00:00Z", BeforeTime: "2026-07-21T00:00:00Z", PerNode: 10, MinUsd: 1000000, StopAt: "exchange", Token: "dac17f958d2ee523a2206206994597c13d831ec7"},
+		hopsClampedFrom: 5,
+		Nodes:           []walkNode{{ID: addr(1), Role: "seed"}},
+	}
+	s := res.summary()
+	for _, want := range []string{
+		"Params: hops=3 (clamped from 5)",
+		"window 2026-07-01T00:00:00Z..2026-07-21T00:00:00Z",
+		"per_node=10",
+		"min_usd=1000000", // 'f' format, not 1e+06
+		"stop_at=exchange",
+		"token=dac17f958d2ee523a2206206994597c13d831ec7",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("params line missing %q\nsummary:\n%s", want, s)
+		}
+	}
+	// No clamp -> no clamp note.
+	res.hopsClampedFrom = 0
+	if strings.Contains(res.summary(), "clamped from") {
+		t.Error("an unclamped hops must not print a clamp note")
+	}
+	// Empty stop_at / token read as all / any.
+	res.Params.StopAt, res.Params.Token = "", ""
+	if s2 := res.summary(); !strings.Contains(s2, "stop_at=all") || !strings.Contains(s2, "token=any") {
+		t.Errorf("empty stop_at/token must read all/any:\n%s", s2)
+	}
+}
+
+// --- F7: an empty graph explains itself from the active filters ------------
+
+func TestWalkEmptyGraphHint(t *testing.T) {
+	base := walkResult{
+		Chain:       "eth",
+		Params:      walkParamsOut{Address: []string{addr(1)}, Hops: 2, AfterTime: "2026-07-01T00:00:00Z", BeforeTime: "2026-07-21T00:00:00Z", MinUsd: 1000},
+		includeZero: 1,
+		Nodes:       []walkNode{{ID: addr(1), Role: "seed"}},
+	}
+	s := base.summary()
+	if !strings.Contains(s, "No outgoing transfers matched the filters") {
+		t.Errorf("an empty graph must explain itself:\n%s", s)
+	}
+	for _, want := range []string{"window 2026-07-01T00:00:00Z..2026-07-21T00:00:00Z", "min_usd=1000", "token=any", "include_zero_value=1"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("empty-graph hint missing %q\n%s", want, s)
+		}
+	}
+	// A budget partial already explains itself; the hint must NOT also fire.
+	p := base
+	p.Partial = true
+	if strings.Contains(p.summary(), "No outgoing transfers matched") {
+		t.Error("a partial (budget-stopped) empty graph must not add the no-match hint")
+	}
+	// A non-empty graph never shows the hint.
+	ne := base
+	ne.Edges = []edgeRow{{From: addr(1), To: addr(2), Token: "native"}}
+	if strings.Contains(ne.summary(), "No outgoing transfers matched") {
+		t.Error("a non-empty graph must not show the no-match hint")
+	}
+}
+
+// --- F12: a budget stop WITH edges is a partial that carries the marker ----
+
+func TestWalkPartialMarker(t *testing.T) {
+	S, A := addr(1), addr(2)
+	mock := &mockFetcher{
+		out:   map[string][]edgeRow{S: {edge(S, A, 100)}, A: {edge(A, addr(3), 10)}},
+		errOn: map[string]error{A: chainexec.ErrNoTime}, // A's expansion runs out of time
+	}
+	in := baseInput(t, "ethereum", []string{S}, 2, mock)
+	res, err := runWalkGraph(context.Background(), in)
+	if err != nil {
+		t.Fatalf("a budget stop must not be an error: %v", err)
+	}
+	if !res.Partial || !res.budgetStopped {
+		t.Fatalf("want a budget-stopped partial, got partial=%v budgetStopped=%v", res.Partial, res.budgetStopped)
+	}
+	if len(res.Edges) == 0 {
+		t.Fatal("this case must keep the S->A edge (a partial WITH edges)")
+	}
+	s := res.summary()
+	if !strings.Contains(s, "Partial: stopped on the budget.") {
+		t.Errorf("a budget-stopped walk's summary must carry the Partial marker:\n%s", s)
+	}
+	if strings.Contains(s, "No outgoing transfers matched") {
+		t.Error("a partial WITH edges is not an empty graph")
+	}
 }

@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -286,8 +287,9 @@ func parseHops(p map[string]any) int {
 
 // activeStopTypes is the set of label types that stop a node for this call: the
 // types of the selected stop_at groups, or of every configured group when stop_at
-// is empty. An unknown group name is rejected.
-func (t Tool) activeStopTypes(p map[string]any) (map[string]bool, error) {
+// is empty. An unknown group name is a coded bad_request refusal that names the
+// allowed groups.
+func (t Tool) activeStopTypes(p map[string]any) (map[string]bool, util.ToolboxError) {
 	groups := splitAddresses(chainexec.AsStr(p["stop_at"]))
 	var selected []string
 	if len(groups) == 0 {
@@ -298,7 +300,7 @@ func (t Tool) activeStopTypes(p map[string]any) (map[string]bool, error) {
 		for _, g := range groups {
 			g = strings.ToLower(strings.TrimSpace(g))
 			if _, ok := t.walkCfg.stopGroups[g]; !ok {
-				return nil, fmt.Errorf("unknown stop group %q", g)
+				return nil, codedWalkErr("bad_request", "stop_at: unknown group %q (allowed: %s)", g, allowedGroups(t.walkCfg.stopGroups))
 			}
 			selected = append(selected, g)
 		}
@@ -310,6 +312,31 @@ func (t Tool) activeStopTypes(p map[string]any) (map[string]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// allowedGroups is the sorted, comma-joined list of configured stop-group names, for
+// the unknown-group error. The names are generic (exchange, mixer, bridge by default)
+// and user-safe; sorting makes the message deterministic across the map's random order.
+func allowedGroups(groups map[string][]string) string {
+	names := make([]string, 0, len(groups))
+	for g := range groups {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// article picks the English indefinite article for a word ("an" before a vowel), so
+// the chain-mismatch message reads "an ethereum address", not "a ethereum address".
+func article(s string) string {
+	if s == "" {
+		return "a"
+	}
+	switch s[0] {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return "an"
+	}
+	return "a"
 }
 
 // walkSeedInput is the seed set string: addresses when given, else address — the
@@ -446,10 +473,18 @@ func (t Tool) walkPrecheck(p map[string]any) util.ToolboxError {
 		}
 	}
 	if len(mismatched) > 0 {
-		return codedWalkErr("chain_mismatch", "seed %s is not a %s address (it is valid on another chain); set chain to match the address", strings.Join(mismatched, ", "), chain)
+		list := strings.Join(mismatched, ", ")
+		if len(mismatched) == 1 {
+			return codedWalkErr("chain_mismatch", "seed %s is not %s %s address (it is valid on another chain); set chain to match the address", list, article(chain), chain)
+		}
+		return codedWalkErr("chain_mismatch", "seeds %s are not %s addresses (they are valid on another chain); set chain to match the address", list, chain)
 	}
 	if len(garbage) > 0 {
-		return codedWalkErr("bad_address", "seed %s is not a valid %s address", strings.Join(garbage, ", "), chain)
+		list := strings.Join(garbage, ", ")
+		if len(garbage) == 1 {
+			return codedWalkErr("bad_address", "seed %s is not a valid %s address", list, chain)
+		}
+		return codedWalkErr("bad_address", "seeds %s are not valid %s addresses", list, chain)
 	}
 	if valid == 0 {
 		return codedWalkErr("bad_address", "no valid %s address in the seed set", chain)
@@ -484,6 +519,11 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 	}
 	req, terr := t.parse(p)
 	if terr != nil {
+		// t.parse is shared with counterparties and returns an uncoded agent error. Give
+		// the walk's window-order error a machine code without touching t.parse.
+		if strings.Contains(terr.Error(), "after_time must be before before_time") {
+			return nil, codedWalkErr("bad_request", "after_time must be before before_time")
+		}
 		return nil, terr
 	}
 	if len(req.invalid) > 0 {
@@ -493,6 +533,7 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 	if len(req.addrs) > maxWalkSeeds {
 		return nil, agentErr("at most %d seed addresses, got %d", maxWalkSeeds, len(req.addrs))
 	}
+	rawHops := int(chainexec.AsInt(p["hops"]))
 	hops := parseHops(p)
 	perNode := parsePerNode(p)
 	maxCost, mcerr := parseMaxCost(p, t.budget.ReportRowsBudget)
@@ -500,9 +541,9 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 		return nil, mcerr
 	}
 	share := parseShare(p)
-	stopTypes, err := t.activeStopTypes(p)
-	if err != nil {
-		return nil, agentErr("stop_at: %v", err)
+	stopTypes, serr := t.activeStopTypes(p)
+	if serr != nil {
+		return nil, serr
 	}
 	codec, _ := codecFor(req.chain)
 
@@ -551,8 +592,12 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 			Address:         req.addrs,
 			Hops:            hops,
 			AfterTime:       req.wStart.UTC().Format(time.RFC3339),
+			BeforeTime:      req.wEnd.UTC().Format(time.RFC3339),
 			MinUsd:          req.minUsd,
 			IncludeInternal: req.includeInternal,
+			PerNode:         perNode,
+			StopAt:          strings.TrimSpace(chainexec.AsStr(p["stop_at"])),
+			Token:           req.token,
 		},
 		dataAsOf:    time.Now().UTC(),
 		fetch:       fetch,
@@ -568,6 +613,12 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 	if werr != nil {
 		return nil, util.ProcessGeneralError(werr)
 	}
+	// Text-only echoes for the summary (never part of the flow_graph/1 document): the raw
+	// hops when it was clamped, and the effective include_zero_value for the empty hint.
+	if rawHops != 0 && rawHops != hops {
+		res.hopsClampedFrom = rawHops
+	}
+	res.includeZero = req.includeZero
 	if budgetRefusal(res) {
 		return nil, codedWalkErr("budget_exceeded", "the walk reached its row budget (max_cost=%d) before finding any edges; narrow it (a shorter window, a single token, or a higher min_usd) or raise max_cost", maxCost)
 	}
