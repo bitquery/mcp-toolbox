@@ -97,8 +97,9 @@ type walkNode struct {
 // walkParamsOut is the echoed request: the params the fixture carries and the app's
 // Expand re-sends (Expand re-sends every params field except address and hops).
 // after_time / before_time are RFC3339 so the window is not shifted by date
-// truncation. per_node, stop_at and token echo the EFFECTIVE (post-default,
-// post-clamp) request, so a caller sees what actually ran rather than what it asked.
+// truncation. per_node and stop_at echo the EFFECTIVE (post-default) request, so a
+// caller sees what actually ran; token echoes the caller's own value (trimmed), not
+// the normalised key, so an Expand re-send is accepted by the codec.
 type walkParamsOut struct {
 	Address         []string `json:"address"`
 	Hops            int      `json:"hops"`

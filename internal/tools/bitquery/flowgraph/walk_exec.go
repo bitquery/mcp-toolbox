@@ -597,7 +597,7 @@ func (t Tool) runWalk(ctx context.Context, p map[string]any) (any, util.ToolboxE
 			IncludeInternal: req.includeInternal,
 			PerNode:         perNode,
 			StopAt:          strings.TrimSpace(chainexec.AsStr(p["stop_at"])),
-			Token:           req.token,
+			Token:           strings.TrimSpace(chainexec.AsStr(p["token"])),
 		},
 		dataAsOf:    time.Now().UTC(),
 		fetch:       fetch,

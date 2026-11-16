@@ -800,7 +800,7 @@ func TestWalkRunWalkParamsEcho(t *testing.T) {
 		"per_node=7",
 		"window 2026-07-01T00:00:00Z..2026-07-21T00:00:00Z",
 		"stop_at=exchange",
-		"token=" + tokHex,
+		"token=0x" + tokHex,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("runWalk text missing %q\n%s", want, text)
@@ -812,8 +812,8 @@ func TestWalkRunWalkParamsEcho(t *testing.T) {
 			t.Errorf("structured params missing %q", k)
 		}
 	}
-	if params["token"] != tokHex {
-		t.Errorf("structured params token = %v, want the effective no-0x key %s", params["token"], tokHex)
+	if params["token"] != "0x"+tokHex {
+		t.Errorf("structured params token = %v, want the echoed caller 0x form %s", params["token"], "0x"+tokHex)
 	}
 
 	// Expand re-sends every echoed param except address and hops. WITHOUT a token it
@@ -831,13 +831,13 @@ func TestWalkRunWalkParamsEcho(t *testing.T) {
 	if _, e := pt.runWalk(context.Background(), expand); e != nil {
 		t.Errorf("Expand re-send (no token) must succeed (the RFC3339 before_time must parse): %v", e)
 	}
-	// WITH the echoed token (no-0x), evmCodec.tokenKey requires a 0x prefix, so this
-	// Expand is REJECTED. This documents pre-existing codec behaviour that the token echo
-	// surfaces (the brief keeps Token = req.token). TRIPWIRE: if this begins to pass, the
-	// codec round-trip changed — revisit the token echo and update this test.
+	// WITH the echoed token: the walk now echoes the caller's token verbatim (the 0x form
+	// the user typed), which evmCodec.tokenKey accepts, so re-sending it on Expand
+	// ROUND-TRIPS. Echoing the caller's token (rather than the normalised no-0x key) is
+	// exactly what makes this Expand re-send valid.
 	expand["token"] = params["token"]
-	if _, e := pt.runWalk(context.Background(), expand); e == nil {
-		t.Error("Expand re-send WITH the echoed no-0x token is expected to be rejected by evmCodec.tokenKey (0x required)")
+	if _, e := pt.runWalk(context.Background(), expand); e != nil {
+		t.Errorf("Expand re-send WITH the echoed token must round-trip (the caller's 0x form parses): %v", e)
 	}
 }
 

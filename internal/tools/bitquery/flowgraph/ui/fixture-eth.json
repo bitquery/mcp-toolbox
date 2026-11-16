@@ -9,8 +9,12 @@
     ],
     "hops": 2,
     "after_time": "2026-07-21",
+    "before_time": "2026-10-19T08:00:00Z",
     "min_usd": 1000,
-    "include_internal": 0
+    "include_internal": 0,
+    "per_node": 10,
+    "stop_at": "",
+    "token": ""
   },
   "nodes": [
     {

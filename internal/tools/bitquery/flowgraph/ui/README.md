@@ -37,7 +37,9 @@ The page picks its mode at start-up, in this order.
    - **Requests from the host:** `ping` and `ui/resource-teardown` are answered with `{}`. Any other request
      gets error -32601.
    - **Expand:** `tools/call` with `name: "flow_graph_expand"`. The arguments are `chain`, `address` (one
-     node id) and every field of the original `params` except `address` and `hops`.
+     node id) and every field of the original `params` except `address` and `hops`. The echoed `params`
+     object carries nine keys: `address`, `hops`, `after_time`, `before_time`, `min_usd`, `include_internal`,
+     `per_node`, `stop_at` and `token`.
      - The button is shown only when `hostCapabilities.serverTools` is present, and only on stopped,
        not-expanded and last-hop leaf nodes. An error response or an `isError` result turns Expand off for
        that view, and a banner says why.

@@ -788,17 +788,9 @@ func TestWalkResultKeysMatchFixture(t *testing.T) {
 	if kf, kg := kind(fix["cost"]), kind(got["cost"]); kf != kg {
 		t.Errorf("cost kind: fixture %s, got %s", kf, kg)
 	}
-	// F6 added before_time / per_node / stop_at / token to the echoed params. The
-	// on-disk fixture (and ui/README.md) still carry the original five keys and were
-	// left untouched (out of the walk-render edit scope), so allow those four as
-	// documented extras here; every other key must still match exactly.
-	fp := fix["params"].(map[string]any)
-	for _, k := range []string{"before_time", "per_node", "stop_at", "token"} {
-		if _, ok := fp[k]; !ok {
-			fp[k] = nil
-		}
-	}
-	assertSameKeys(t, "params", fp, got["params"].(map[string]any))
+	// The on-disk fixture now carries all nine echoed params (F6 added before_time /
+	// per_node / stop_at / token), so params keys must match the walk output exactly.
+	assertSameKeys(t, "params", fix["params"].(map[string]any), got["params"].(map[string]any))
 	assertSameKeys(t, "node", fix["nodes"].([]any)[0].(map[string]any), got["nodes"].([]any)[0].(map[string]any))
 	assertSameKeys(t, "edge", fix["edges"].([]any)[0].(map[string]any), got["edges"].([]any)[0].(map[string]any))
 	assertSameKeys(t, "label entry", firstLabel(t, fix), firstLabel(t, got))

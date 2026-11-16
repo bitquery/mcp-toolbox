@@ -80,6 +80,21 @@ func agentErr(format string, args ...any) util.ToolboxError {
 	return util.NewAgentError(fmt.Sprintf(format, args...), nil)
 }
 
+// indefiniteArticle returns the English indefinite article for word: "an" before a
+// vowel-initial word, "a" otherwise. It keeps a user-facing error grammatical whatever
+// the chain name is; chain names are lowercase ASCII with no "hour"/"honest" exception,
+// so a first-letter vowel test is enough.
+func indefiniteArticle(word string) string {
+	if word == "" {
+		return "a"
+	}
+	switch word[0] {
+	case 'a', 'e', 'i', 'o', 'u':
+		return "an"
+	}
+	return "a"
+}
+
 // request is one parsed, validated call.
 type request struct {
 	chain           string
@@ -449,7 +464,7 @@ func (t Tool) parse(p map[string]any) (request, util.ToolboxError) {
 	if tok := strings.TrimSpace(chainexec.AsStr(p["token"])); tok != "" {
 		key, ok := codec.tokenKey(tok)
 		if !ok {
-			return request{}, agentErr("token must be a %s token id", chain)
+			return request{}, agentErr("token must be %s %s token id", indefiniteArticle(chain), chain)
 		}
 		req.token = key
 	}
