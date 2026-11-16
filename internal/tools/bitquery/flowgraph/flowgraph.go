@@ -94,9 +94,25 @@ type Config struct {
 	// row there is not evidence the address is unlabelled). A chain NOT listed here
 	// whose counterparty returns no label row reads Label_Status=none instead — the
 	// distinction AT8 turns on (zcash resolves to none, not no_coverage).
-	NoCoverageChains []string               `yaml:"noCoverageChains"`
-	Parameters       parameters.Parameters  `yaml:"parameters"`
-	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+	NoCoverageChains []string `yaml:"noCoverageChains"`
+	// Walk turns this tool into the multi-hop flow_graph walk (walk.go) instead of
+	// the hop-1 counterparties run(). Off by default, so a counterparties tool is
+	// byte-for-byte unchanged. The keys below are read only when Walk is true (sane
+	// defaults in resolveWalkConfig): HubMaxCounterparties is the hub cut-off (more
+	// counterparties than this stops a node), WalkChunkSize the senders batched per
+	// statement, WalkEdgeCap the global edge cap, WalkChunkRowBudget the per-chunk
+	// max_rows_to_read (a chunk whose scan exceeds it is refused before start and
+	// bisected), WalkMaxRefusals the cap on such refusals per call, and StopAtGroups
+	// the stop-group name -> label types map (default: exchange/mixer/bridge).
+	Walk                 bool                   `yaml:"walk,omitempty"`
+	HubMaxCounterparties int                    `yaml:"hubMaxCounterparties,omitempty"`
+	WalkChunkSize        int                    `yaml:"walkChunkSize,omitempty"`
+	WalkEdgeCap          int                    `yaml:"walkEdgeCap,omitempty"`
+	WalkChunkRowBudget   int64                  `yaml:"walkChunkRowBudget,omitempty"`
+	WalkMaxRefusals      int                    `yaml:"walkMaxRefusals,omitempty"`
+	StopAtGroups         map[string][]string    `yaml:"stopAtGroups,omitempty"`
+	Parameters           parameters.Parameters  `yaml:"parameters"`
+	Annotations          *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
 
 var _ tools.ToolConfig = Config{}
@@ -111,14 +127,21 @@ type sqlSource interface {
 	RunSQL(context.Context, string, parameters.ParamValues) (any, error)
 }
 
-// paramTypes are the parameters this kind reads, with their types; addresses and
-// chain are required, the rest optional. A cfg parameter not listed here is
-// refused at load, so the manifest cannot drift from what Go reads.
+// paramTypes are the parameters this kind reads, with their types; addresses (or,
+// on a walk tool, address) and chain are required, the rest optional. A cfg
+// parameter not listed here is refused at load, so the manifest cannot drift from
+// what Go reads.
 var paramTypes = map[string]string{
 	"addresses":          "string",
+	"address":            "string",
 	"chain":              "string",
 	"group_by":           "string",
 	"direction":          "string",
+	"hops":               "integer",
+	"stop_at":            "string",
+	"per_node":           "integer",
+	"max_cost":           "integer",
+	"share":              "boolean",
 	"after_time":         "string",
 	"before_time":        "string",
 	"max_txs":            "integer",
@@ -131,6 +154,16 @@ var paramTypes = map[string]string{
 	"label_type":         "string",
 	"exclude_label_type": "string",
 	"format":             "string",
+}
+
+// walkOnlyParams are the parameters a plain counterparties tool must not declare:
+// they drive the multi-hop walk only (hops/stop_at/per_node/share), budget it
+// (max_cost), or are the walk's seed alias (address, what the in-chat app's Expand
+// sends). Declaring one on a non-walk tool is refused at load, so counterparties'
+// manifest is byte-for-byte unchanged by this kind learning the walk.
+var walkOnlyParams = map[string]bool{
+	"hops": true, "stop_at": true, "per_node": true, "max_cost": true,
+	"share": true, "address": true,
 }
 
 func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
@@ -173,12 +206,26 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		if p.GetType() != want {
 			return nil, fmt.Errorf("tool %q: parameter %q must be of type %s, not %s", cfg.Name, p.GetName(), want, p.GetType())
 		}
+		// The walk-only parameters (hops/stop_at/per_node/max_cost/share/address) must
+		// not appear on a non-walk tool (counterparties), so its load behaviour is
+		// identical to before this change.
+		if !cfg.Walk && walkOnlyParams[p.GetName()] {
+			return nil, fmt.Errorf("tool %q: parameter %q is only valid on a walk tool (walk: true)", cfg.Name, p.GetName())
+		}
 		seen[p.GetName()] = true
 	}
-	for _, req := range []string{"addresses", "chain"} {
-		if !seen[req] {
-			return nil, fmt.Errorf("tool %q: parameter %q is required", cfg.Name, req)
+	// chain is always required. The seed set is addresses, except that a walk tool
+	// may instead (or also) declare address — the single-node alias the in-chat
+	// app's Expand sends (runWalk accepts either).
+	if !seen["chain"] {
+		return nil, fmt.Errorf("tool %q: parameter %q is required", cfg.Name, "chain")
+	}
+	if cfg.Walk {
+		if !seen["addresses"] && !seen["address"] {
+			return nil, fmt.Errorf("tool %q: a walk tool must declare parameter %q or %q", cfg.Name, "addresses", "address")
 		}
+	} else if !seen["addresses"] {
+		return nil, fmt.Errorf("tool %q: parameter %q is required", cfg.Name, "addresses")
 	}
 
 	t := Tool{
@@ -193,6 +240,8 @@ func (cfg Config) Initialize(ctx context.Context) (tools.Tool, error) {
 		lm:          lm,
 		labelChains: labelChains,
 		noCoverage:  map[string]bool{},
+		walk:        cfg.Walk,
+		walkCfg:     resolveWalkConfig(cfg),
 	}
 	for _, c := range cfg.NoCoverageChains {
 		t.noCoverage[strings.ToLower(strings.TrimSpace(c))] = true
@@ -275,6 +324,11 @@ type Tool struct {
 	// noCoverageChains): a counterparty on one reads Label_Status=no_coverage and the
 	// labels statement is skipped.
 	noCoverage map[string]bool
+	// walk is cfg.Walk: when true, Invoke runs the multi-hop walk (walk.go) instead
+	// of counterparties; walkCfg is the resolved walk bounds (hub N, chunk size,
+	// edge cap, stop groups). walkCfg is unused when walk is false.
+	walk    bool
+	walkCfg walkConfig
 }
 
 // noCoverageChain reports whether the tool chain has no label coverage at all (cfg
@@ -334,5 +388,10 @@ func (t Tool) ValidateSource(source sources.Source) error {
 }
 
 func (t Tool) Invoke(ctx context.Context, _ sources.Source, params parameters.ParamValues, _ tools.AccessToken) (any, util.ToolboxError) {
+	// A walk tool (cfg walk: true) takes the multi-hop path; every other tool of
+	// this kind is counterparties, unchanged.
+	if t.walk {
+		return t.runWalk(ctx, params.AsMap())
+	}
 	return t.run(ctx, params.AsMap())
 }
