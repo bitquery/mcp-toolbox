@@ -936,6 +936,48 @@ func TestWalkSummaryStopAndNodeBlock(t *testing.T) {
 	}
 }
 
+// A node's in_usd / out_usd is a Go sum of the per-edge amount_usd (each already
+// 2dp from SQL); summing those floats re-introduces binary-float noise, so the
+// aggregate is rounded to cents before it reaches the structured document and the
+// node CSV. Three 0.1 edges sum to 0.30000000000000004 in float64; the node must
+// read 0.3, not the noisy value.
+func TestWalkNodeUSDRoundedToCents(t *testing.T) {
+	S, A, B, C := addr(1), addr(2), addr(3), addr(4)
+	mock := &mockFetcher{
+		out: map[string][]edgeRow{
+			S: {edge(S, A, 0.1), edge(S, B, 0.1), edge(S, C, 0.1)},
+		},
+	}
+	in := baseInput(t, "ethereum", []string{S}, 1, mock)
+	res, err := runWalkGraph(context.Background(), in)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	// Structured: the seed's out_usd is rounded to cents.
+	var seed *walkNode
+	for i := range res.Nodes {
+		if res.Nodes[i].ID == S {
+			seed = &res.Nodes[i]
+		}
+	}
+	if seed == nil || seed.OutUsd == nil {
+		t.Fatalf("seed node with out_usd not found: %+v", res.Nodes)
+	}
+	if got := usdCell(seed.OutUsd); got != "0.3" {
+		t.Errorf("seed out_usd = %q, want %q (rounded to cents)", got, "0.3")
+	}
+
+	// Text: the node CSV carries the rounded value, and the summary never shows
+	// the full-precision float.
+	s := res.summary()
+	if strings.Contains(s, "0.30000000000000004") {
+		t.Errorf("summary shows the un-rounded float:\n%s", s)
+	}
+	rows := parseNodeBlock(t, s)
+	assertNodeRow(t, rows, S, "seed", "", "", "", "0.3")
+}
+
 // --- F4: the edge CSV shows the TOP-N by USD, r.Edges unchanged ------------
 
 func parseEdgeCSV(t *testing.T, s string) [][]string {

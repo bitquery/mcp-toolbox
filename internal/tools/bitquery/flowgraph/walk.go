@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,8 +79,8 @@ type labelEntry struct {
 // (null when none); labels lists every distinct type the node carries. role is
 // seed | hop | stop | unexpanded; stop_reason is label | hub (null otherwise).
 // in_usd / out_usd are the summed priced USD of the node's kept incoming /
-// outgoing edges (null when none priced). edges_dropped / usd_dropped are what
-// the edge cap dropped at this node.
+// outgoing edges, rounded to cents (null when none priced). edges_dropped /
+// usd_dropped are what the edge cap dropped at this node.
 type walkNode struct {
 	ID           string       `json:"id"`
 	Label        *string      `json:"label"`
@@ -644,12 +645,17 @@ func (e *walkEngine) result() *walkResult {
 			sr := n.stopReason
 			wn.StopReason = &sr
 		}
+		// Round the aggregated USD to cents. The per-edge amount_usd is already
+		// rounded to 2dp (SQL), but summing those floats in Go re-introduces
+		// binary-float noise (e.g. 12525.500000000002), which usdCell prints at
+		// full precision; round once here so both the structured in_usd/out_usd
+		// and the node CSV read in cents.
 		if inHas[n.id] {
-			v := inUsd[n.id]
+			v := math.Round(inUsd[n.id]*100) / 100
 			wn.InUsd = &v
 		}
 		if outHas[n.id] {
-			v := outUsd[n.id]
+			v := math.Round(outUsd[n.id]*100) / 100
 			wn.OutUsd = &v
 		}
 		nodes = append(nodes, wn)
